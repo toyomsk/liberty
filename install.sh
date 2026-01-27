@@ -50,11 +50,12 @@ prompt_input() {
     
     while true; do
         if [ -n "$default_value" ]; then
-            echo -ne "${BLUE}[?]${NC} $prompt_text [по умолчанию: $default_value]: "
+            echo -ne "${BLUE}[?]${NC} $prompt_text [по умолчанию: $default_value]: " >&2
         else
-            echo -ne "${BLUE}[?]${NC} $prompt_text: "
+            echo -ne "${BLUE}[?]${NC} $prompt_text: " >&2
         fi
-        read input_value
+        # Читаем из /dev/tty чтобы гарантировать чтение из терминала
+        read input_value < /dev/tty
         
         # Использовать значение по умолчанию если ввод пустой
         if [ -z "$input_value" ] && [ -n "$default_value" ]; then
@@ -152,12 +153,24 @@ get_config_params() {
     # Запрос сети
     WG_NETWORK=$(prompt_input "Введите сеть WireGuard (CIDR формат, например 10.10.1.0/24)" "10.10.1.0/24" "validate_network")
     
+    # Проверка что переменная установлена правильно
+    if [[ -z "$WG_NETWORK" ]] || [[ "$WG_NETWORK" =~ \[.*\] ]]; then
+        log_error "Ошибка: не удалось получить сеть WireGuard"
+        exit 1
+    fi
+    
     # Вычисление IP адреса сервера
     WG_SERVER_IP=$(calculate_server_ip "$WG_NETWORK")
     log_info "IP адрес сервера будет: $WG_SERVER_IP"
     
     # Запрос порта
     WG_PORT=$(prompt_input "Введите порт для прослушивания WireGuard" "51820" "validate_port")
+    
+    # Проверка что переменная установлена правильно
+    if [[ -z "$WG_PORT" ]] || [[ "$WG_PORT" =~ \[.*\] ]]; then
+        log_error "Ошибка: не удалось получить порт WireGuard"
+        exit 1
+    fi
     
     echo ""
     log_success "Параметры конфигурации:"
@@ -361,18 +374,29 @@ generate_config() {
     
     # Генерация параметров obfuscation
     log_info "Генерация параметров obfuscation..."
-    OBFS_Jc=$((RANDOM % 10 + 1))  # 1-10
-    OBFS_Jmin=$((RANDOM % 15 + 5))  # 5-20
-    OBFS_Jmax=$((RANDOM % 80 + 20))  # 20-100
-    OBFS_S1=$((RANDOM % 100))
-    OBFS_S2=$((RANDOM % 100))
-    OBFS_H1=$((RANDOM % 2147483647 + 1000000000))  # Большое случайное число
-    OBFS_H2=$((RANDOM % 2147483647 + 1000000000))
-    OBFS_H3=$((RANDOM % 2147483647 + 1000000000))
-    OBFS_H4=$((RANDOM % 2147483647 + 1000000000))
+    OBFS_Jc=$((RANDOM % 200 + 50))  # 50-250
+    OBFS_Jmin=$((RANDOM % 300 + 300))  # 300-600
+    OBFS_Jmax=$((RANDOM % 300 + 400))  # 400-700
+    OBFS_S1=$((RANDOM % 50 + 10))  # 10-60
+    OBFS_S2=$((RANDOM % 50 + 10))  # 10-60
+    # H1-H4: случайные числа в диапазоне 0-2147483647 (32-bit)
+    # Используем /dev/urandom для генерации больших случайных чисел
+    OBFS_H1=$(( $(od -An -N4 -tu4 /dev/urandom | tr -d ' ') % 2147483648 ))
+    OBFS_H2=$(( $(od -An -N4 -tu4 /dev/urandom | tr -d ' ') % 2147483648 ))
+    OBFS_H3=$(( $(od -An -N4 -tu4 /dev/urandom | tr -d ' ') % 2147483648 ))
+    OBFS_H4=$(( $(od -An -N4 -tu4 /dev/urandom | tr -d ' ') % 2147483648 ))
     
     # Создание базового конфига
     log_info "Создание конфигурации сервера..."
+    
+    # Проверка что переменные установлены правильно
+    if [[ "$WG_SERVER_IP" =~ \[.*\] ]] || [[ "$WG_PORT" =~ \[.*\] ]]; then
+        log_error "Ошибка: переменные конфигурации содержат недопустимые значения"
+        log_error "WG_SERVER_IP=$WG_SERVER_IP"
+        log_error "WG_PORT=$WG_PORT"
+        exit 1
+    fi
+    
     cat > "$WG_CONFIG" << EOF
 [Interface]
 PrivateKey = $SERVER_PRIVATE_KEY
@@ -387,6 +411,9 @@ H1 = $OBFS_H1
 H2 = $OBFS_H2
 H3 = $OBFS_H3
 H4 = $OBFS_H4
+
+PostUp = iptables -A INPUT -p udp --dport $$WG_PORT -m conntrack --ctstate NEW -j ACCEPT --wait 10 --wait-interval 50; iptables -A FORWARD -i eth0 -o wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -A FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE --wait 10 --wait-interval 50; ip6tables -A FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; ip6tables -t nat -A POSTROUTING -o eth0 -j MASQUERADE --wait 10 --wait-interval 50
+PostDown = iptables -D INPUT -p udp --dport $$WG_PORT -m conntrack --ctstate NEW -j ACCEPT --wait 10 --wait-interval 50; iptables -D FORWARD -i eth0 -o wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -D FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE --wait 10 --wait-interval 50; ip6tables -D FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; ip6tables -t nat -D POSTROUTING -o eth0 -j MASQUERADE --wait 10 --wait-interval 50
 EOF
     
     log_success "Конфигурация WireGuard создана"
