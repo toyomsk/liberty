@@ -632,11 +632,11 @@ H2 = $OBFS_H2
 H3 = $OBFS_H3
 H4 = $OBFS_H4
 
-PostUp = iptables -A INPUT -p udp --dport $WG_PORT -m conntrack --ctstate NEW -j ACCEPT --wait 10 --wait-interval 50; iptables -A FORWARD -i eth0 -o wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -A FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE --wait 10 --wait-interval 50
-#; ip6tables -A FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; ip6tables -t nat -A POSTROUTING -o eth0 -j MASQUERADE --wait 10 --wait-interval 50
+PostUp = iptables -A INPUT -p udp --dport $WG_PORT -m conntrack --ctstate NEW -j ACCEPT --wait 10 --wait-interval 50; iptables -A FORWARD -i $EXTERNAL_IF -o wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -A FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -A POSTROUTING -o $EXTERNAL_IF -j MASQUERADE --wait 10 --wait-interval 50
+#; ip6tables -A FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; ip6tables -t nat -A POSTROUTING -o $EXTERNAL_IF -j MASQUERADE --wait 10 --wait-interval 50
 
-PostDown = iptables -D INPUT -p udp --dport $WG_PORT -m conntrack --ctstate NEW -j ACCEPT --wait 10 --wait-interval 50; iptables -D FORWARD -i eth0 -o wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -D FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE --wait 10 --wait-interval 50
-#; ip6tables -D FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; ip6tables -t nat -D POSTROUTING -o eth0 -j MASQUERADE --wait 10 --wait-interval 50
+PostDown = iptables -D INPUT -p udp --dport $WG_PORT -m conntrack --ctstate NEW -j ACCEPT --wait 10 --wait-interval 50; iptables -D FORWARD -i $EXTERNAL_IF -o wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -D FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -D POSTROUTING -o $EXTERNAL_IF -j MASQUERADE --wait 10 --wait-interval 50
+#; ip6tables -D FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; ip6tables -t nat -D POSTROUTING -o $EXTERNAL_IF -j MASQUERADE --wait 10 --wait-interval 50
 EOF
 
     log_success "Конфигурация WireGuard создана"
