@@ -240,6 +240,12 @@ setup_user_and_ssh() {
     
     log_step "Создание пользователя и настройка SSH"
     
+    # Проверка что пользователь не существует
+    if id "$NEW_USER" &>/dev/null; then
+        log_error "Пользователь $NEW_USER уже существует. Пропускаем создание пользователя."
+        return 1
+    fi
+    
     # Создание пользователя
     log_info "Создание пользователя $NEW_USER..."
     useradd -m -s /bin/bash "$NEW_USER" || {
@@ -255,6 +261,13 @@ setup_user_and_ssh() {
         exit 1
     }
     log_success "Пользователь $NEW_USER добавлен в группу sudo"
+    
+    # Настройка sudo без пароля для нового пользователя
+    log_info "Настройка sudo без пароля для пользователя $NEW_USER..."
+    local sudoers_file="/etc/sudoers.d/$NEW_USER"
+    echo "$NEW_USER ALL=(ALL) NOPASSWD: ALL" > "$sudoers_file"
+    chmod 0440 "$sudoers_file"
+    log_success "Sudo без пароля настроен для пользователя $NEW_USER"
     
     # Создание директории .ssh
     local ssh_dir="/home/$NEW_USER/.ssh"
