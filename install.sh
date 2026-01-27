@@ -197,17 +197,35 @@ check_os() {
 check_utils() {
     log_step "Проверка необходимых утилит"
     local missing_utils=()
+    local packages_to_install=()
     
-    for util in curl wg; do
-        if ! command -v $util &> /dev/null; then
-            missing_utils+=($util)
-        fi
-    done
+    # Проверяем curl
+    if ! command -v curl &> /dev/null; then
+        missing_utils+=("curl")
+        packages_to_install+=("curl")
+    fi
     
-    if [ ${#missing_utils[@]} -gt 0 ]; then
+    # Проверяем wg (wireguard-tools)
+    if ! command -v wg &> /dev/null; then
+        missing_utils+=("wg")
+        packages_to_install+=("wireguard-tools")
+    fi
+    
+    if [ ${#packages_to_install[@]} -gt 0 ]; then
         log_info "Установка недостающих утилит: ${missing_utils[*]}"
-        apt update -qq
-        apt install -y ${missing_utils[*]} > /dev/null 2>&1
+        apt update -qq || true
+        apt install -y ${packages_to_install[*]} > /dev/null 2>&1 || {
+            log_error "Не удалось установить пакеты: ${packages_to_install[*]}"
+            exit 1
+        }
+        
+        # Проверяем что утилиты действительно установились
+        for util in "${missing_utils[@]}"; do
+            if ! command -v $util &> /dev/null; then
+                log_error "Утилита $util не найдена после установки"
+                exit 1
+            fi
+        done
     fi
     
     log_success "Все необходимые утилиты доступны"
