@@ -444,7 +444,7 @@ services:
       - ./awg-config:/opt/amnezia/awg
 
     command: >
-      "wg-quick up /opt/amnezia/awg/wg0.conf && tail -f /dev/null"
+      sh -c "awg-quick up /opt/amnezia/awg/wg0.conf && tail -f /dev/null"
 
     restart: always
 EOF
