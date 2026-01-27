@@ -412,8 +412,9 @@ H2 = $OBFS_H2
 H3 = $OBFS_H3
 H4 = $OBFS_H4
 
-PostUp = iptables -A INPUT -p udp --dport $$WG_PORT -m conntrack --ctstate NEW -j ACCEPT --wait 10 --wait-interval 50; iptables -A FORWARD -i eth0 -o wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -A FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE --wait 10 --wait-interval 50; ip6tables -A FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; ip6tables -t nat -A POSTROUTING -o eth0 -j MASQUERADE --wait 10 --wait-interval 50
-PostDown = iptables -D INPUT -p udp --dport $$WG_PORT -m conntrack --ctstate NEW -j ACCEPT --wait 10 --wait-interval 50; iptables -D FORWARD -i eth0 -o wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -D FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE --wait 10 --wait-interval 50; ip6tables -D FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; ip6tables -t nat -D POSTROUTING -o eth0 -j MASQUERADE --wait 10 --wait-interval 50
+PostUp = iptables -A INPUT -p udp --dport $WG_PORT -m conntrack --ctstate NEW -j ACCEPT --wait 10 --wait-interval 50; iptables -A FORWARD -i eth0 -o wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -A FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE --wait 10 --wait-interval 50; ip6tables -A FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; ip6tables -t nat -A POSTROUTING -o eth0 -j MASQUERADE --wait 10 --wait-interval 50
+
+PostDown = iptables -D INPUT -p udp --dport $WG_PORT -m conntrack --ctstate NEW -j ACCEPT --wait 10 --wait-interval 50; iptables -D FORWARD -i eth0 -o wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -D FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE --wait 10 --wait-interval 50; ip6tables -D FORWARD -i wg0 -j ACCEPT --wait 10 --wait-interval 50; ip6tables -t nat -D POSTROUTING -o eth0 -j MASQUERADE --wait 10 --wait-interval 50
 EOF
     
     log_success "Конфигурация WireGuard создана"
@@ -443,11 +444,7 @@ services:
       - ./awg-config:/opt/amnezia/awg
 
     command: >
-      sh -c "EXTERNAL_IF=$$(ip route | grep default | awk '{print $$5}' | head -1) &&
-      iptables -C DOCKER-USER -i wg0 -o $$EXTERNAL_IF -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -i wg0 -o $$EXTERNAL_IF -j ACCEPT &&
-      iptables -C DOCKER-USER -i $$EXTERNAL_IF -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || iptables -I DOCKER-USER -i $$EXTERNAL_IF -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT &&
-      iptables -t nat -C POSTROUTING -s $WG_NETWORK -o $$EXTERNAL_IF -j MASQUERADE 2>/dev/null || iptables -t nat -A POSTROUTING -s $WG_NETWORK -o $$EXTERNAL_IF -j MASQUERADE &&
-      wg-quick up /opt/amnezia/awg/wg0.conf && tail -f /dev/null"
+      "wg-quick up /opt/amnezia/awg/wg0.conf && tail -f /dev/null"
 
     restart: always
 EOF
