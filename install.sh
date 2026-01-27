@@ -21,6 +21,11 @@ WG_PORT=""
 WG_SERVER_IP=""
 EXTERNAL_IF=""
 
+# Переменные для нового пользователя
+NEW_USER=""
+NEW_USER_SSH_KEY=""
+CREATE_USER=false
+
 # Счетчик шагов
 STEP=0
 
@@ -35,6 +40,10 @@ log_success() {
 
 log_error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+log_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
 }
 
 log_step() {
@@ -132,6 +141,165 @@ get_default_interface() {
     else
         echo "eth0"
     fi
+}
+
+# Валидация имени пользователя
+validate_username() {
+    local username="$1"
+    # Проверка формата имени пользователя (только буквы, цифры, дефисы и подчеркивания, начинается с буквы)
+    if [[ "$username" =~ ^[a-z][a-z0-9_-]*$ ]] && [ ${#username} -le 32 ]; then
+        # Проверка что пользователь не существует
+        if ! id "$username" &>/dev/null; then
+            return 0
+        else
+            log_error "Пользователь $username уже существует"
+            return 1
+        fi
+    else
+        log_error "Неверный формат имени пользователя (только строчные буквы, цифры, дефисы и подчеркивания, начинается с буквы, до 32 символов)"
+        return 1
+    fi
+}
+
+# Валидация SSH ключа
+validate_ssh_key() {
+    local ssh_key="$1"
+    # Проверка что это похоже на SSH ключ (начинается с ssh-rsa, ssh-ed25519, ecdsa и т.д.)
+    if [[ "$ssh_key" =~ ^(ssh-rsa|ssh-ed25519|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521|ssh-dss) ]]; then
+        return 0
+    else
+        log_error "Неверный формат SSH ключа. Ожидается ключ типа ssh-rsa, ssh-ed25519 и т.д."
+        return 1
+    fi
+}
+
+# Интерактивный запрос параметров пользователя
+get_user_params() {
+    log_step "Настройка пользователя и SSH"
+    
+    echo ""
+    log_info "Вы можете создать нового пользователя и настроить SSH безопасность"
+    echo ""
+    
+    local create_user_choice=""
+    while [[ ! "$create_user_choice" =~ ^[yYnN]$ ]]; do
+        echo -ne "${BLUE}[?]${NC} Создать нового пользователя и настроить SSH? (y/n) [по умолчанию: n]: " >&2
+        read create_user_choice < /dev/tty
+        if [ -z "$create_user_choice" ]; then
+            create_user_choice="n"
+        fi
+    done
+    
+    if [[ "$create_user_choice" =~ ^[yY]$ ]]; then
+        CREATE_USER=true
+        
+        # Запрос имени пользователя
+        NEW_USER=$(prompt_input "Введите имя нового пользователя" "" "validate_username")
+        
+        # Запрос SSH ключа
+        echo ""
+        log_info "Введите SSH публичный ключ (ssh-rsa, ssh-ed25519 и т.д.)"
+        log_info "Пример: ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQ..."
+        echo ""
+        
+        local ssh_key_input=""
+        while true; do
+            echo -ne "${BLUE}[?]${NC} SSH ключ: " >&2
+            read ssh_key_input < /dev/tty
+            
+            if [ -z "$ssh_key_input" ]; then
+                log_error "SSH ключ не может быть пустым"
+                continue
+            fi
+            
+            # Валидация SSH ключа
+            if validate_ssh_key "$ssh_key_input"; then
+                NEW_USER_SSH_KEY="$ssh_key_input"
+                break
+            else
+                log_error "Неверный формат SSH ключа. Попробуйте снова."
+            fi
+        done
+        
+        echo ""
+        log_success "Параметры пользователя:"
+        log_info "  Имя пользователя: $NEW_USER"
+        log_info "  SSH ключ: ${NEW_USER_SSH_KEY:0:50}..."
+        echo ""
+    else
+        CREATE_USER=false
+        log_info "Создание пользователя пропущено"
+    fi
+}
+
+# Создание пользователя и настройка SSH
+setup_user_and_ssh() {
+    if [ "$CREATE_USER" != "true" ]; then
+        return 0
+    fi
+    
+    log_step "Создание пользователя и настройка SSH"
+    
+    # Создание пользователя
+    log_info "Создание пользователя $NEW_USER..."
+    useradd -m -s /bin/bash "$NEW_USER" || {
+        log_error "Не удалось создать пользователя $NEW_USER"
+        exit 1
+    }
+    log_success "Пользователь $NEW_USER создан"
+    
+    # Настройка sudo для нового пользователя
+    log_info "Настройка sudo для пользователя $NEW_USER..."
+    usermod -aG sudo "$NEW_USER" || {
+        log_error "Не удалось добавить пользователя $NEW_USER в группу sudo"
+        exit 1
+    }
+    log_success "Пользователь $NEW_USER добавлен в группу sudo"
+    
+    # Создание директории .ssh
+    local ssh_dir="/home/$NEW_USER/.ssh"
+    mkdir -p "$ssh_dir"
+    chmod 700 "$ssh_dir"
+    chown "$NEW_USER:$NEW_USER" "$ssh_dir"
+    
+    # Добавление SSH ключа
+    log_info "Добавление SSH ключа..."
+    echo "$NEW_USER_SSH_KEY" > "$ssh_dir/authorized_keys"
+    chmod 600 "$ssh_dir/authorized_keys"
+    chown "$NEW_USER:$NEW_USER" "$ssh_dir/authorized_keys"
+    log_success "SSH ключ добавлен"
+    
+    # Настройка SSH для отключения root входа
+    log_info "Настройка SSH для отключения root входа..."
+    local sshd_config="/etc/ssh/sshd_config"
+    
+    # Создаем резервную копию
+    cp "$sshd_config" "${sshd_config}.backup.$(date +%Y%m%d_%H%M%S)"
+    
+    # Отключаем root вход (обрабатываем закомментированные строки)
+    if grep -qE "^[[:space:]]*PermitRootLogin" "$sshd_config"; then
+        # Заменяем существующую строку (включая закомментированную)
+        sed -i 's/^[[:space:]]*#*[[:space:]]*PermitRootLogin.*/PermitRootLogin no/' "$sshd_config"
+    else
+        echo "PermitRootLogin no" >> "$sshd_config"
+    fi
+    
+    # Убеждаемся что парольная аутентификация включена для нового пользователя (на случай если нужно)
+    if ! grep -qE "^[[:space:]]*PasswordAuthentication" "$sshd_config"; then
+        echo "PasswordAuthentication yes" >> "$sshd_config"
+    fi
+    
+    # Перезапуск SSH службы
+    log_info "Перезапуск SSH службы..."
+    systemctl restart sshd || systemctl restart ssh || {
+        log_error "Не удалось перезапустить SSH службу. Проверьте конфигурацию вручную!"
+        log_error "Резервная копия: ${sshd_config}.backup.*"
+        exit 1
+    }
+    
+    log_success "SSH настроен: root вход отключен"
+    log_warning "ВАЖНО: Убедитесь, что вы можете подключиться как $NEW_USER перед закрытием текущей сессии!"
+    echo ""
 }
 
 # Вычисление первого IP адреса в сети для сервера
@@ -621,6 +789,15 @@ main() {
     check_root
     check_os
     check_utils
+    
+    # Запрос параметров пользователя и SSH (если нужно)
+    get_user_params
+    
+    # Настройка пользователя и SSH (если нужно)
+    if [ "$CREATE_USER" = "true" ]; then
+        setup_user_and_ssh
+    fi
+    
     tune_system
 
     # Запрос параметров конфигурации перед установкой
