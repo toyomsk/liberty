@@ -213,11 +213,18 @@ check_utils() {
     
     if [ ${#packages_to_install[@]} -gt 0 ]; then
         log_info "Установка недостающих утилит: ${missing_utils[*]}"
-        apt update -qq || true
-        apt install -y ${packages_to_install[*]} > /dev/null 2>&1 || {
+        
+        # Временно отключаем set -e для команд apt
+        set +e
+        apt update -qq 2>&1 | grep -v "can be upgraded" || true
+        local install_result=0
+        apt install -y ${packages_to_install[*]} > /dev/null 2>&1 || install_result=$?
+        set -e
+        
+        if [ $install_result -ne 0 ]; then
             log_error "Не удалось установить пакеты: ${packages_to_install[*]}"
             exit 1
-        }
+        fi
         
         # Проверяем что утилиты действительно установились
         for util in "${missing_utils[@]}"; do
