@@ -811,7 +811,7 @@ main() {
         setup_user_and_ssh
     fi
     
-    tune_system
+#    tune_system
 
     # Запрос параметров конфигурации перед установкой
     get_config_params
