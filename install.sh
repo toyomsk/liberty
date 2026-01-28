@@ -678,9 +678,9 @@ iptables -t nat -A POSTROUTING -s WG_NETWORK_PLACEHOLDER -o EXTERNAL_IF_PLACEHOL
 tail -f /dev/null
 SCRIPT_EOF
     
-    # Заменяем плейсхолдеры на реальные значения
-    sed -i "s/EXTERNAL_IF_PLACEHOLDER/$EXTERNAL_IF/g" "$startup_script"
-    sed -i "s/WG_NETWORK_PLACEHOLDER/$WG_NETWORK/g" "$startup_script"
+    # Заменяем плейсхолдеры на реальные значения (используем | как разделитель для sed)
+    sed -i "s|EXTERNAL_IF_PLACEHOLDER|$EXTERNAL_IF|g" "$startup_script"
+    sed -i "s|WG_NETWORK_PLACEHOLDER|$WG_NETWORK|g" "$startup_script"
     
     chmod +x "$startup_script"
     log_success "Скрипт запуска создан: $startup_script"
