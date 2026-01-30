@@ -783,14 +783,25 @@ create_directories() {
 generate_config() {
     log_step "Генерация конфигурации WireGuard"
 
-    # Генерация ключей сервера
-    log_info "Генерация ключей сервера..."
-    SERVER_PRIVATE_KEY=$(wg genkey)
-    SERVER_PUBLIC_KEY=$(echo "$SERVER_PRIVATE_KEY" | wg pubkey)
+    # Генерация ключей сервера через контейнер Amnezia WG
+    log_info "Генерация ключей сервера (через контейнер)..."
+    if ! command -v docker &>/dev/null || ! docker info &>/dev/null; then
+        log_error "Для генерации ключей нужен Docker. Установите Docker и запустите скрипт снова."
+        exit 1
+    fi
+    docker pull amneziavpn/amnezia-wg:latest -q >/dev/null 2>&1 || true
+    SERVER_PRIVATE_KEY=$(docker run --rm amneziavpn/amnezia-wg:latest wg genkey 2>/dev/null | tr -d '\r\n')
+    SERVER_PUBLIC_KEY=$(echo "$SERVER_PRIVATE_KEY" | docker run --rm -i amneziavpn/amnezia-wg:latest wg pubkey 2>/dev/null | tr -d '\r\n')
 
     # Генерация PSK (сохраняем для метаданных)
     log_info "Генерация PSK..."
-    PSK=$(wg genpsk)
+    PSK=$(docker run --rm amneziavpn/amnezia-wg:latest wg genpsk 2>/dev/null | tr -d '\r\n')
+
+    if [ -z "$SERVER_PRIVATE_KEY" ] || [ -z "$SERVER_PUBLIC_KEY" ] || [ -z "$PSK" ]; then
+        log_error "Не удалось сгенерировать ключи WireGuard через контейнер"
+        exit 1
+    fi
+    log_success "Ключи WireGuard сгенерированы"
 
     # Получение внешнего IP
     log_info "Получение внешнего IP адреса для интерфейса $EXTERNAL_IF..."
