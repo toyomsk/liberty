@@ -436,6 +436,21 @@ choose_vpn_type() {
         fi
     done
     
+    echo "$vpn_choice"
+}
+
+# Интерактивный запрос параметров конфигурации
+get_config_params() {
+    log_step "Настройка параметров VPN"
+
+    echo ""
+    log_info "Настройка параметров конфигурации VPN"
+    echo ""
+    
+    # Выбор типа VPN
+    local vpn_choice=$(choose_vpn_type)
+    
+    # Устанавливаем XRAY_ENABLED на основе выбора (в родительском процессе)
     case "$vpn_choice" in
         1)
             XRAY_ENABLED=false
@@ -450,19 +465,6 @@ choose_vpn_type() {
             log_info "Выбраны оба: WireGuard + Xray-core"
             ;;
     esac
-    echo "$vpn_choice"
-}
-
-# Интерактивный запрос параметров конфигурации
-get_config_params() {
-    log_step "Настройка параметров VPN"
-
-    echo ""
-    log_info "Настройка параметров конфигурации VPN"
-    echo ""
-    
-    # Выбор типа VPN
-    local vpn_choice=$(choose_vpn_type)
     
     # Настройка WireGuard (если не выбран только Xray)
     if [ "$vpn_choice" != "2" ]; then
