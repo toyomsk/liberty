@@ -52,6 +52,9 @@ NEW_USER=""
 NEW_USER_SSH_KEY=""
 CREATE_USER=false
 
+# Флаг: после установки сервера сразу установить бота (пункт меню 3)
+INSTALL_BOT_AFTER_SERVER=""
+
 # Счетчик шагов
 STEP=0
 
@@ -640,22 +643,10 @@ check_utils() {
         packages_to_install+=("curl")
     fi
 
-    # Проверяем wg (wireguard-tools)
-    if ! command -v wg &> /dev/null; then
-        missing_utils+=("wg")
-        packages_to_install+=("wireguard-tools")
-    fi
-
     # Проверяем ifconfig (net-tools)
     if ! command -v ifconfig &> /dev/null; then
         missing_utils+=("ifconfig")
         packages_to_install+=("net-tools")
-    fi
-
-    # Проверяем uuidgen (uuid-runtime) для генерации UUID
-    if ! command -v uuidgen &> /dev/null; then
-        missing_utils+=("uuidgen")
-        packages_to_install+=("uuid-runtime")
     fi
 
     # Проверяем jq для работы с JSON (опционально, но полезно)
@@ -900,14 +891,9 @@ generate_xray_params() {
     fi
     docker pull teddysun/xray:latest -q >/dev/null 2>&1 || true
 
-    log_info "Генерация UUID для VLESS через контейнер Xray..."
-    XRAY_UUID=$(docker run --rm --entrypoint "" teddysun/xray:latest /usr/bin/xray uuid 2>/dev/null | tr -d '\r\n') || true
-    if [ -z "$XRAY_UUID" ]; then
-        log_error "Не удалось сгенерировать UUID через контейнер Xray"
-        exit 1
-    fi
-    log_success "UUID сгенерирован: $XRAY_UUID"
-    
+    # Первый клиент не создаём — клиенты добавляются только через бота
+    XRAY_UUID=""
+
     # Генерация короткого ID для Reality (8 байт в hex, 16 символов)
     log_info "Генерация короткого ID для Reality..."
     XRAY_SHORT_ID=$(openssl rand -hex 8 | head -c 16)
@@ -963,16 +949,15 @@ generate_xray_config() {
     
     log_step "Генерация конфигурации Xray"
     
-    # Проверка что все параметры установлены
-    if [ -z "$XRAY_UUID" ] || [ -z "$XRAY_PORT" ] || [ -z "$XRAY_SERVER_NAME" ] || [ -z "$XRAY_SHORT_ID" ] || [ -z "$XRAY_DEST" ]; then
+    # Проверка что все параметры установлены (XRAY_UUID не нужен — клиенты через бота)
+    if [ -z "$XRAY_PORT" ] || [ -z "$XRAY_SERVER_NAME" ] || [ -z "$XRAY_SHORT_ID" ] || [ -z "$XRAY_DEST" ] || [ -z "$XRAY_PRIVATE_KEY" ]; then
         log_error "Не все параметры Xray установлены"
         exit 1
     fi
     
-    log_info "Создание JSON конфигурации Xray..."
+    log_info "Создание JSON конфигурации Xray (клиенты — пустой массив, добавляются через бота)..."
     
-    # Создаем JSON конфиг для Xray
-    # Используем здесь документ для создания JSON
+    # Создаем JSON конфиг для Xray; clients пустой — клиенты добавляются через Telegram-бота
     cat > "$XRAY_CONFIG" << EOF
 {
   "log": {
@@ -983,12 +968,7 @@ generate_xray_config() {
       "port": ${XRAY_PORT},
       "protocol": "vless",
       "settings": {
-        "clients": [
-          {
-            "id": "${XRAY_UUID}",
-            "flow": "xtls-rprx-vision"
-          }
-        ],
+        "clients": [],
         "decryption": "none"
       },
       "streamSettings": {
@@ -1022,7 +1002,6 @@ EOF
     chown root:root "$XRAY_CONFIG"
     
     log_success "Конфигурация Xray создана: $XRAY_CONFIG"
-    log_info "  UUID: $XRAY_UUID"
     log_info "  Порт: $XRAY_PORT"
     log_info "  SNI: $XRAY_SERVER_NAME"
     log_info "  Public Key: ${XRAY_PUBLIC_KEY:0:32}..."
@@ -1052,36 +1031,16 @@ XRAY_SCRIPT_EOF
     log_success "Скрипт запуска Xray создан: $xray_startup_script"
 }
 
-# Генерация клиентских конфигов Xray (VLESS ссылка)
+# Заглушка client.txt для Xray (клиенты добавляются через бота)
 generate_xray_client_config() {
     if [ "$XRAY_ENABLED" != "true" ]; then
         return 0
     fi
-    
-    log_step "Генерация клиентской конфигурации Xray"
-    
-    if [ -z "$XRAY_UUID" ] || [ -z "$EXTERNAL_IP" ] || [ -z "$XRAY_PORT" ] || [ -z "$XRAY_PUBLIC_KEY" ] || [ -z "$XRAY_SERVER_NAME" ] || [ -z "$XRAY_SHORT_ID" ]; then
-        log_warning "Не все параметры Xray установлены для генерации клиентского конфига"
-        return 1
-    fi
-    
-    # Генерируем VLESS ссылку в формате:
-    # vless://UUID@IP:PORT?security=reality&encryption=none&pbk=PUBLIC_KEY&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=SNI&sid=SHORT_ID#SERVER_NAME
-    
-    local vless_url="vless://${XRAY_UUID}@${EXTERNAL_IP}:${XRAY_PORT}?security=reality&encryption=none&pbk=${XRAY_PUBLIC_KEY}&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=${XRAY_SERVER_NAME}&sid=${XRAY_SHORT_ID}#${XRAY_SERVER_NAME}"
-    
     local client_config_file="$CONFIG_DIR/xray/client.txt"
-    echo "$vless_url" > "$client_config_file"
+    echo "# Клиенты Xray добавляются через Telegram-бота" > "$client_config_file"
     chmod 600 "$client_config_file"
-    chown root:root "$client_config_file"
-    
-    log_success "Клиентская конфигурация сохранена: $client_config_file"
-    echo ""
-    log_info "VLESS ссылка для подключения:"
-    echo "$vless_url"
-    echo ""
-    log_info "Импортируйте эту ссылку в клиент Xray/V2Ray для подключения"
-    echo ""
+    chown root:root "$client_config_file" 2>/dev/null || true
+    log_info "Файл $client_config_file создан (заглушка)"
 }
 
 # Создание универсальных правил блокировки торрентов
@@ -1566,7 +1525,207 @@ load_install_info() {
     return 0
 }
 
-# Интерактивное меню выбора действия
+# Установка Telegram-бота для управления клиентами
+install_bot() {
+    local SCRIPT_DIR
+    SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+    local BOT_DIR="$INSTALL_DIR/telegram-bot"
+
+    log_step "Установка Telegram-бота"
+
+    # Проверка наличия исходников бота
+    if [ ! -d "$SCRIPT_DIR/telegram-bot" ] || [ ! -f "$SCRIPT_DIR/telegram-bot/requirements.txt" ]; then
+        log_error "Директория telegram-bot не найдена рядом со скриптом или отсутствует requirements.txt"
+        return 1
+    fi
+
+    # Установка системных зависимостей для бота
+    if command -v apt-get &>/dev/null; then
+        apt-get update -qq
+        apt-get install -y -qq python3 python3-pip python3-venv qrencode wireguard-tools curl 2>/dev/null || true
+    elif command -v yum &>/dev/null; then
+        yum install -y python3 python3-pip qrencode wireguard-tools curl 2>/dev/null || true
+        python3 -m ensurepip --upgrade 2>/dev/null || true
+    fi
+
+    mkdir -p "$BOT_DIR"
+    # Копируем файлы бота (исключая venv, __pycache__, .env, .git)
+    if command -v rsync &>/dev/null; then
+        rsync -a --exclude=venv --exclude=__pycache__ --exclude=.env --exclude=.git \
+            "$SCRIPT_DIR/telegram-bot/" "$BOT_DIR/"
+    else
+        for item in "$SCRIPT_DIR/telegram-bot"/*; do
+            [ -e "$item" ] || continue
+            name=$(basename "$item")
+            [ "$name" = "venv" ] || [ "$name" = ".env" ] || [ "$name" = ".git" ] && continue
+            cp -R "$item" "$BOT_DIR/" 2>/dev/null || cp "$item" "$BOT_DIR/"
+        done
+        for dir in "$SCRIPT_DIR/telegram-bot"/bot "$SCRIPT_DIR/telegram-bot"/config; do
+            [ -d "$dir" ] && [ ! -d "$BOT_DIR/$(basename "$dir")" ] && cp -R "$dir" "$BOT_DIR/"
+        done
+    fi
+
+    # Виртуальное окружение и зависимости
+    if [ ! -d "$BOT_DIR/venv" ]; then
+        python3 -m venv "$BOT_DIR/venv"
+        log_success "Виртуальное окружение создано"
+    fi
+    # shellcheck source=/dev/null
+    "$BOT_DIR/venv/bin/pip" install -q --upgrade pip
+    "$BOT_DIR/venv/bin/pip" install -q -r "$BOT_DIR/requirements.txt"
+    log_success "Python-зависимости установлены"
+
+    # .env: не перезаписывать без подтверждения
+    local create_env=true
+    if [ -f "$BOT_DIR/.env" ]; then
+        echo ""
+        local overwrite_env=""
+        while [[ ! "$overwrite_env" =~ ^[yYnN]$ ]]; do
+            echo -ne "${BLUE}[?]${NC} Файл .env уже существует. Перезаписать? (y/N): " >&2
+            read overwrite_env < /dev/tty
+        done
+        [[ ! "$overwrite_env" =~ ^[yY]$ ]] && create_env=false
+    fi
+
+    if [ "$create_env" = true ]; then
+        echo ""
+        log_info "Введите BOT_TOKEN (от @BotFather) и ADMIN_IDS (Telegram ID через запятую)."
+        local BOT_TOKEN="" ADMIN_IDS=""
+        while [ -z "$BOT_TOKEN" ]; do
+            echo -ne "${BLUE}[?]${NC} BOT_TOKEN: " >&2
+            read BOT_TOKEN < /dev/tty
+        done
+        while [ -z "$ADMIN_IDS" ]; do
+            echo -ne "${BLUE}[?]${NC} ADMIN_IDS (через запятую): " >&2
+            read ADMIN_IDS < /dev/tty
+        done
+        local DEFAULT_EXTERNAL_IF="eth0"
+        command -v ip &>/dev/null && DEFAULT_EXTERNAL_IF=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -1) || true
+        [ -z "$DEFAULT_EXTERNAL_IF" ] && DEFAULT_EXTERNAL_IF="eth0"
+        cat > "$BOT_DIR/.env" << EOF
+# Токен бота от BotFather
+BOT_TOKEN=$BOT_TOKEN
+
+# ID администраторов (через запятую)
+ADMIN_IDS=$ADMIN_IDS
+
+# Путь к директории с конфигурацией WireGuard (Liberty)
+VPN_CONFIG_DIR=$INSTALL_DIR/config/wg
+
+# Путь к директории с docker-compose (Liberty)
+DOCKER_COMPOSE_DIR=$INSTALL_DIR
+
+# Начальный IP адрес для клиентов (последний октет)
+VPN_CLIENT_START_IP=2
+
+# DNS серверы для клиентов (через запятую)
+DNS_SERVERS=1.1.1.1,8.8.8.8
+
+# Имя интерфейса WireGuard (обычно wg0)
+WG_INTERFACE=wg0
+
+# Имя внешнего сетевого интерфейса
+EXTERNAL_IF=$DEFAULT_EXTERNAL_IF
+EOF
+        chmod 600 "$BOT_DIR/.env"
+        log_success "Файл .env создан"
+    fi
+
+    # Предложение systemd-сервиса
+    echo ""
+    local create_svc=""
+    while [[ ! "$create_svc" =~ ^[yYnN]$ ]]; do
+        echo -ne "${BLUE}[?]${NC} Создать systemd-сервис для автозапуска бота? (y/N): " >&2
+        read create_svc < /dev/tty
+    done
+    if [[ "$create_svc" =~ ^[yY]$ ]]; then
+        local SERVICE_FILE="/etc/systemd/system/liberty-bot.service"
+        cat > "$SERVICE_FILE" << EOF
+[Unit]
+Description=Liberty Telegram Bot (VPN management)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$BOT_DIR
+Environment="PATH=$BOT_DIR/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONPATH=$BOT_DIR"
+EnvironmentFile=$BOT_DIR/.env
+ExecStart=$BOT_DIR/venv/bin/python -m bot.main
+StandardOutput=journal
+StandardError=journal
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+        log_success "Сервис создан: $SERVICE_FILE"
+        local enable_svc=""
+        while [[ ! "$enable_svc" =~ ^[yYnN]$ ]]; do
+            echo -ne "${BLUE}[?]${NC} Включить автозапуск и запустить сервис сейчас? (y/N): " >&2
+            read enable_svc < /dev/tty
+        done
+        if [[ "$enable_svc" =~ ^[yY]$ ]]; then
+            systemctl enable liberty-bot.service
+            systemctl start liberty-bot.service
+            log_success "Сервис liberty-bot включен и запущен"
+        fi
+    fi
+
+    echo ""
+    log_success "Установка Telegram-бота завершена."
+    log_info "Запуск вручную: cd $BOT_DIR && $BOT_DIR/venv/bin/python -m bot.main"
+    log_info "Сервис: systemctl start liberty-bot.service"
+    echo ""
+}
+
+# Интерактивное меню в начале (сервер / только бот / сервер и бот / выход)
+show_start_menu() {
+    echo ""
+    echo "  1) Установить сервер (AWG + Xray)"
+    echo "  2) Установить только Telegram-бота"
+    echo "  3) Установить сервер (AWG + Xray) и Telegram-бота"
+    echo "  4) Выход"
+    echo ""
+    local choice=""
+    while [[ ! "$choice" =~ ^[1-4]$ ]]; do
+        echo -ne "${BLUE}[?]${NC} Ваш выбор (1-4): " >&2
+        read choice < /dev/tty
+    done
+    case "$choice" in
+        1) ;;
+        2)
+            if [ -f "/opt/docker/liberty/.install_info" ]; then
+                INSTALL_DIR="/opt/docker/liberty"
+            else
+                echo ""
+                log_info "Укажите путь к установке Liberty (директория с .install_info и config/)."
+                local path_liberty=""
+                while [ -z "$path_liberty" ] || [ ! -d "$path_liberty" ]; do
+                    echo -ne "${BLUE}[?]${NC} Путь [/opt/docker/liberty]: " >&2
+                    read path_liberty < /dev/tty
+                    [ -z "$path_liberty" ] && path_liberty="/opt/docker/liberty"
+                    [ ! -d "$path_liberty" ] && log_error "Директория не найдена: $path_liberty"
+                done
+                INSTALL_DIR="$path_liberty"
+            fi
+            install_bot
+            exit 0
+            ;;
+        3)
+            INSTALL_BOT_AFTER_SERVER=1
+            ;;
+        4)
+            log_info "Выход из скрипта"
+            exit 0
+            ;;
+    esac
+}
+
+# Интерактивное меню выбора действия (при существующей установке)
 show_installation_menu() {
     echo ""
     echo "=========================================="
@@ -1578,12 +1737,13 @@ show_installation_menu() {
     echo "  1) Удаление всего установленного"
     echo "  2) Полная переустановка с нуля"
     echo "  3) Изменение IP-адреса и порта сервера"
-    echo "  4) Выход"
+    echo "  4) Установить или переустановить Telegram-бота"
+    echo "  5) Выход"
     echo ""
     
     local choice=""
-    while [[ ! "$choice" =~ ^[1-4]$ ]]; do
-        echo -ne "${BLUE}[?]${NC} Ваш выбор (1-4): " >&2
+    while [[ ! "$choice" =~ ^[1-5]$ ]]; do
+        echo -ne "${BLUE}[?]${NC} Ваш выбор (1-5): " >&2
         read choice < /dev/tty
     done
     
@@ -1600,6 +1760,11 @@ show_installation_menu() {
             exit 0
             ;;
         4)
+            install_bot
+            log_info "Для выхода запустите скрипт снова."
+            exit 0
+            ;;
+        5)
             log_info "Выход из скрипта"
             exit 0
             ;;
@@ -2177,10 +2342,9 @@ print_summary() {
     if [ "$XRAY_ENABLED" = "true" ]; then
         echo "Xray-core:"
         echo "  Для просмотра логов: docker logs xray-core"
-        if [ -n "$XRAY_UUID" ] && [ -n "$XRAY_PUBLIC_KEY" ]; then
+        if [ -n "$XRAY_PUBLIC_KEY" ]; then
             echo ""
-            echo "Параметры подключения Xray:"
-            echo "  UUID: $XRAY_UUID"
+            echo "Параметры Xray (клиенты добавляются через бота):"
             echo "  Порт: $XRAY_PORT"
             echo "  SNI: $XRAY_SERVER_NAME"
             echo "  Public Key: $XRAY_PUBLIC_KEY"
@@ -2203,6 +2367,9 @@ main() {
     echo ""
 
     check_root
+
+    # Интерактивное меню в начале: сервер / только бот / сервер и бот / выход
+    show_start_menu
     
     # Проверка существующей установки
     if check_existing_installation; then
@@ -2266,6 +2433,18 @@ main() {
     if check_status; then
         # Сохраняем метаданные после успешной установки
         save_install_info
+        # Установка бота: сразу (пункт 3) или по запросу (пункт 1)
+        if [ "$INSTALL_BOT_AFTER_SERVER" = "1" ]; then
+            install_bot
+        else
+            echo ""
+            local install_bot_choice=""
+            while [[ ! "$install_bot_choice" =~ ^[yYnN]$ ]]; do
+                echo -ne "${BLUE}[?]${NC} Установить Telegram-бота для управления клиентами? (y/N): " >&2
+                read install_bot_choice < /dev/tty
+            done
+            [[ "$install_bot_choice" =~ ^[yY]$ ]] && install_bot
+        fi
         print_summary
         exit 0
     else

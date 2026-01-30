@@ -1,0 +1,9 @@
+# IDE
+.idea/
+*.iml
+
+# Bot
+telegram-bot/venv/
+telegram-bot/.env
+telegram-bot/*.db
+telegram-bot/clients.db
