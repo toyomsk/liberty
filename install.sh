@@ -918,19 +918,23 @@ generate_xray_params() {
     log_info "Генерация ключей Reality..."
     local keys_generated=false
     
-    # Пробуем Docker: образ teddysun/xray с переопределением entrypoint
+    # Генерация через контейнер teddysun/xray (как в документации Xray: xray x25519)
+    # Образ использует CMD ["/usr/bin/xray", "-config", ...] — аргументы после образа заменяют CMD
     if command -v docker &> /dev/null && docker info &> /dev/null; then
-        log_info "Используем Docker для генерации x25519 ключей..."
-        docker pull teddysun/xray:latest -q 2>/dev/null || true
+        log_info "Генерация x25519 ключей через контейнер Xray..."
+        docker pull teddysun/xray:latest -q >/dev/null 2>&1 || true
         local key_output
-        key_output=$(docker run --rm --entrypoint "" teddysun/xray:latest /usr/bin/xray x25519 2>/dev/null) || \
-        key_output=$(docker run --rm teddysun/xray:latest x25519 2>/dev/null) || \
-        key_output=$(docker run --rm teddysun/xray:latest /usr/bin/xray x25519 2>/dev/null) || true
-        if echo "$key_output" | grep -q "Private:"; then
+        # Замена CMD: контейнер запускает /usr/bin/xray x25519 (вывод: Private key: ... Public key: ...)
+        key_output=$(docker run --rm teddysun/xray:latest /usr/bin/xray x25519 2>/dev/null) || \
+        key_output=$(docker run --rm --entrypoint /usr/bin/xray teddysun/xray:latest x25519 2>/dev/null) || true
+        if echo "$key_output" | grep -q "Private key:"; then
+            XRAY_PRIVATE_KEY=$(echo "$key_output" | grep "Private key:" | sed 's/.*Private key:[[:space:]]*//' | tr -d '\r\n')
+            XRAY_PUBLIC_KEY=$(echo "$key_output" | grep "Public key:" | sed 's/.*Public key:[[:space:]]*//' | tr -d '\r\n')
+        elif echo "$key_output" | grep -q "Private:"; then
             XRAY_PRIVATE_KEY=$(echo "$key_output" | grep "Private:" | awk '{print $2}')
             XRAY_PUBLIC_KEY=$(echo "$key_output" | grep "Public:" | awk '{print $2}')
-            [ -n "$XRAY_PRIVATE_KEY" ] && [ -n "$XRAY_PUBLIC_KEY" ] && keys_generated=true
         fi
+        [ -n "$XRAY_PRIVATE_KEY" ] && [ -n "$XRAY_PUBLIC_KEY" ] && keys_generated=true
     fi
     
     # Fallback: OpenSSL x25519 (настоящие ключи, не случайные байты)
