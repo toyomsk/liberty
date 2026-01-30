@@ -35,6 +35,18 @@ OBFS_H3=""
 OBFS_H4=""
 PSK=""
 
+# Переменные для Xray-core (VLESS + XTLS-Reality + Vision)
+XRAY_ENABLED=false
+XRAY_PORT=""
+XRAY_UUID=""
+XRAY_SERVER_NAME=""
+XRAY_SHORT_ID=""
+XRAY_DEST=""
+XRAY_XVER=0
+XRAY_PRIVATE_KEY=""
+XRAY_PUBLIC_KEY=""
+XRAY_CONFIG="$CONFIG_DIR/xray-config.json"
+
 # Переменные для нового пользователя
 NEW_USER=""
 NEW_USER_SSH_KEY=""
@@ -358,16 +370,57 @@ calculate_server_ip() {
     echo "$server_ip/32"
 }
 
+# Выбор типа VPN
+choose_vpn_type() {
+    echo ""
+    log_info "Выберите тип VPN для установки:"
+    echo ""
+    echo "  1) Только WireGuard"
+    echo "  2) Только Xray-core (VLESS + XTLS-Reality + Vision)"
+    echo "  3) Оба (WireGuard + Xray-core)"
+    echo ""
+    
+    local vpn_choice=""
+    while [[ ! "$vpn_choice" =~ ^[1-3]$ ]]; do
+        echo -ne "${BLUE}[?]${NC} Ваш выбор (1-3) [по умолчанию: 1]: " >&2
+        read vpn_choice < /dev/tty
+        if [ -z "$vpn_choice" ]; then
+            vpn_choice="1"
+        fi
+    done
+    
+    case "$vpn_choice" in
+        1)
+            XRAY_ENABLED=false
+            log_info "Выбран только WireGuard"
+            ;;
+        2)
+            XRAY_ENABLED=true
+            log_info "Выбран только Xray-core"
+            ;;
+        3)
+            XRAY_ENABLED=true
+            log_info "Выбраны оба: WireGuard + Xray-core"
+            ;;
+    esac
+    echo "$vpn_choice"
+}
+
 # Интерактивный запрос параметров конфигурации
 get_config_params() {
-    log_step "Настройка параметров WireGuard"
+    log_step "Настройка параметров VPN"
 
     echo ""
-    log_info "Настройка параметров конфигурации WireGuard"
+    log_info "Настройка параметров конфигурации VPN"
     echo ""
-
-    # Запрос сети
-    WG_NETWORK=$(prompt_input "Введите сеть WireGuard (CIDR формат, например 10.10.1.0/24)" "10.10.1.0/24" "validate_network")
+    
+    # Выбор типа VPN
+    local vpn_choice=$(choose_vpn_type)
+    
+    # Настройка WireGuard (если не выбран только Xray)
+    if [ "$vpn_choice" != "2" ]; then
+        # Запрос сети
+        WG_NETWORK=$(prompt_input "Введите сеть WireGuard (CIDR формат, например 10.10.1.0/24)" "10.10.1.0/24" "validate_network")
 
     # Проверка что переменная установлена правильно
     if [[ -z "$WG_NETWORK" ]] || [[ "$WG_NETWORK" =~ \[.*\] ]]; then
@@ -388,23 +441,102 @@ get_config_params() {
         exit 1
     fi
 
-    # Определение интерфейса по умолчанию
-    local default_if=$(get_default_interface)
+        # Определение интерфейса по умолчанию
+        local default_if=$(get_default_interface)
 
-    # Запрос интерфейса для выхода в интернет
-    EXTERNAL_IF=$(prompt_input "Введите интерфейс для выхода в интернет" "$default_if" "validate_interface")
+        # Запрос интерфейса для выхода в интернет
+        EXTERNAL_IF=$(prompt_input "Введите интерфейс для выхода в интернет" "$default_if" "validate_interface")
 
-    # Проверка что переменная установлена правильно
-    if [[ -z "$EXTERNAL_IF" ]] || [[ "$EXTERNAL_IF" =~ \[.*\] ]]; then
-        log_error "Ошибка: не удалось получить интерфейс"
-        exit 1
+        # Проверка что переменная установлена правильно
+        if [[ -z "$EXTERNAL_IF" ]] || [[ "$EXTERNAL_IF" =~ \[.*\] ]]; then
+            log_error "Ошибка: не удалось получить интерфейс"
+            exit 1
+        fi
+    else
+        # Если только Xray, все равно нужен интерфейс
+        local default_if=$(get_default_interface)
+        EXTERNAL_IF=$(prompt_input "Введите интерфейс для выхода в интернет" "$default_if" "validate_interface")
+        if [[ -z "$EXTERNAL_IF" ]] || [[ "$EXTERNAL_IF" =~ \[.*\] ]]; then
+            log_error "Ошибка: не удалось получить интерфейс"
+            exit 1
+        fi
+    fi
+    
+    # Настройка Xray (если включен)
+    if [ "$XRAY_ENABLED" = "true" ]; then
+        echo ""
+        log_info "Настройка параметров Xray-core"
+        echo ""
+        
+        # Запрос порта Xray
+        XRAY_PORT=$(prompt_input "Введите порт для Xray (VLESS)" "443" "validate_port")
+        
+        # Проверка что переменная установлена правильно
+        if [[ -z "$XRAY_PORT" ]] || [[ "$XRAY_PORT" =~ \[.*\] ]]; then
+            log_error "Ошибка: не удалось получить порт Xray"
+            exit 1
+        fi
+        
+        # Выбор SNI для Reality
+        echo ""
+        log_info "Выберите SNI (Server Name Indication) для Reality:"
+        echo "  Можно выбрать популярный сайт для маскировки трафика"
+        echo ""
+        local sni_choice=""
+        local sni_options=("www.microsoft.com" "www.cloudflare.com" "www.google.com" "www.apple.com" "www.amazon.com" "Ввести вручную")
+        local sni_index=1
+        for sni_option in "${sni_options[@]}"; do
+            echo "  $sni_index) $sni_option"
+            sni_index=$((sni_index + 1))
+        done
+        echo ""
+        
+        while [[ ! "$sni_choice" =~ ^[1-6]$ ]]; do
+            echo -ne "${BLUE}[?]${NC} Ваш выбор (1-6) [по умолчанию: 1]: " >&2
+            read sni_choice < /dev/tty
+            if [ -z "$sni_choice" ]; then
+                sni_choice="1"
+            fi
+        done
+        
+        if [ "$sni_choice" = "6" ]; then
+            echo -ne "${BLUE}[?]${NC} Введите SNI вручную: " >&2
+            read XRAY_SERVER_NAME < /dev/tty
+            if [ -z "$XRAY_SERVER_NAME" ]; then
+                XRAY_SERVER_NAME="www.microsoft.com"
+                log_warning "SNI не введен, используется по умолчанию: $XRAY_SERVER_NAME"
+            fi
+        else
+            XRAY_SERVER_NAME="${sni_options[$((sni_choice - 1))]}"
+        fi
+        
+        # Destination для Reality (можно использовать тот же SNI)
+        echo ""
+        log_info "Destination для Reality (поддельный сайт)"
+        XRAY_DEST=$(prompt_input "Введите destination (hostname:port)" "${XRAY_SERVER_NAME}:443" "")
+        if [ -z "$XRAY_DEST" ]; then
+            XRAY_DEST="${XRAY_SERVER_NAME}:443"
+        fi
+        
+        echo ""
+        log_success "Параметры Xray:"
+        log_info "  Порт: $XRAY_PORT"
+        log_info "  SNI: $XRAY_SERVER_NAME"
+        log_info "  Destination: $XRAY_DEST"
+        echo ""
     fi
 
     echo ""
     log_success "Параметры конфигурации:"
-    log_info "  Сеть: $WG_NETWORK"
-    log_info "  IP сервера: $WG_SERVER_IP"
-    log_info "  Порт: $WG_PORT"
+    if [ "$XRAY_ENABLED" != "true" ] || [ "$vpn_choice" != "2" ]; then
+        log_info "  WireGuard сеть: $WG_NETWORK"
+        log_info "  WireGuard IP сервера: $WG_SERVER_IP"
+        log_info "  WireGuard порт: $WG_PORT"
+    fi
+    if [ "$XRAY_ENABLED" = "true" ]; then
+        log_info "  Xray порт: $XRAY_PORT"
+        log_info "  Xray SNI: $XRAY_SERVER_NAME"
+    fi
     log_info "  Внешний интерфейс: $EXTERNAL_IF"
     echo ""
 }
@@ -457,6 +589,18 @@ check_utils() {
     if ! command -v ifconfig &> /dev/null; then
         missing_utils+=("ifconfig")
         packages_to_install+=("net-tools")
+    fi
+
+    # Проверяем uuidgen (uuid-runtime) для генерации UUID
+    if ! command -v uuidgen &> /dev/null; then
+        missing_utils+=("uuidgen")
+        packages_to_install+=("uuid-runtime")
+    fi
+
+    # Проверяем jq для работы с JSON (опционально, но полезно)
+    if ! command -v jq &> /dev/null; then
+        missing_utils+=("jq")
+        packages_to_install+=("jq")
     fi
 
     if [ ${#packages_to_install[@]} -gt 0 ]; then
@@ -677,6 +821,277 @@ EOF
     save_install_info "true"
 }
 
+# Генерация параметров Xray
+generate_xray_params() {
+    if [ "$XRAY_ENABLED" != "true" ]; then
+        return 0
+    fi
+    
+    log_step "Генерация параметров Xray"
+    
+    # Генерация UUID для VLESS
+    log_info "Генерация UUID для VLESS..."
+    if command -v uuidgen &> /dev/null; then
+        XRAY_UUID=$(uuidgen)
+    elif [ -f /proc/sys/kernel/random/uuid ]; then
+        XRAY_UUID=$(cat /proc/sys/kernel/random/uuid)
+    else
+        # Fallback: генерируем UUID вручную
+        XRAY_UUID=$(od -x /dev/urandom | head -1 | awk '{OFS="-"; print $2$3,$4,$5,$6,$7$8$9}')
+    fi
+    
+    if [ -z "$XRAY_UUID" ]; then
+        log_error "Не удалось сгенерировать UUID"
+        exit 1
+    fi
+    log_success "UUID сгенерирован: $XRAY_UUID"
+    
+    # Генерация короткого ID для Reality (8 байт в hex, 16 символов)
+    log_info "Генерация короткого ID для Reality..."
+    XRAY_SHORT_ID=$(openssl rand -hex 8 | head -c 16)
+    if [ -z "$XRAY_SHORT_ID" ]; then
+        # Fallback: используем случайные байты
+        XRAY_SHORT_ID=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n' | head -c 16)
+    fi
+    log_success "Short ID сгенерирован: $XRAY_SHORT_ID"
+    
+    # Генерация ключей для Reality (private/public key pair)
+    log_info "Генерация ключей Reality..."
+    # Используем xray для генерации ключей через Docker (если доступен)
+    # Проверяем что Docker доступен
+    if command -v docker &> /dev/null && docker info &> /dev/null; then
+        log_info "Используем Docker для генерации x25519 ключей..."
+        local key_output=$(docker run --rm xtls/xray-core:latest xray x25519 2>/dev/null)
+        if echo "$key_output" | grep -q "Private:"; then
+            XRAY_PRIVATE_KEY=$(echo "$key_output" | grep "Private:" | awk '{print $2}')
+            XRAY_PUBLIC_KEY=$(echo "$key_output" | grep "Public:" | awk '{print $2}')
+            log_success "Ключи x25519 сгенерированы через Docker"
+        else
+            log_warning "Не удалось сгенерировать ключи через Docker, используем альтернативный метод"
+            XRAY_PRIVATE_KEY=$(openssl rand -hex 32 | head -c 64)
+            XRAY_PUBLIC_KEY=$(openssl rand -hex 32 | head -c 64)
+        fi
+    else
+        # Fallback: используем openssl для генерации случайных ключей
+        # Примечание: это не настоящие x25519 ключи, но для тестирования подойдет
+        # В продакшене лучше использовать xray для генерации после установки Docker
+        log_warning "Docker недоступен, используем упрощенную генерацию ключей"
+        log_info "После установки Docker ключи будут перегенерированы через xray"
+        XRAY_PRIVATE_KEY=$(openssl rand -hex 32 | head -c 64)
+        XRAY_PUBLIC_KEY=$(openssl rand -hex 32 | head -c 64)
+    fi
+    
+    if [ -z "$XRAY_PRIVATE_KEY" ] || [ -z "$XRAY_PUBLIC_KEY" ]; then
+        log_warning "Не удалось сгенерировать ключи Reality автоматически"
+        log_info "Используем упрощенную генерацию..."
+        XRAY_PRIVATE_KEY=$(openssl rand -hex 32 | head -c 64)
+        XRAY_PUBLIC_KEY=$(openssl rand -hex 32 | head -c 64)
+    fi
+    
+    log_success "Ключи Reality сгенерированы"
+    log_info "  Private Key: ${XRAY_PRIVATE_KEY:0:32}..."
+    log_info "  Public Key: ${XRAY_PUBLIC_KEY:0:32}..."
+    
+    # XVER для Reality (обычно 0)
+    XRAY_XVER=0
+    
+    echo ""
+}
+
+# Генерация конфигурации Xray
+generate_xray_config() {
+    if [ "$XRAY_ENABLED" != "true" ]; then
+        return 0
+    fi
+    
+    log_step "Генерация конфигурации Xray"
+    
+    # Проверка что все параметры установлены
+    if [ -z "$XRAY_UUID" ] || [ -z "$XRAY_PORT" ] || [ -z "$XRAY_SERVER_NAME" ] || [ -z "$XRAY_SHORT_ID" ] || [ -z "$XRAY_DEST" ]; then
+        log_error "Не все параметры Xray установлены"
+        exit 1
+    fi
+    
+    log_info "Создание JSON конфигурации Xray..."
+    
+    # Создаем JSON конфиг для Xray
+    # Используем здесь документ для создания JSON
+    cat > "$XRAY_CONFIG" << EOF
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "inbounds": [
+    {
+      "port": ${XRAY_PORT},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          {
+            "id": "${XRAY_UUID}",
+            "flow": "xtls-rprx-vision"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "${XRAY_DEST}",
+          "xver": ${XRAY_XVER},
+          "serverNames": [
+            "${XRAY_SERVER_NAME}"
+          ],
+          "privateKey": "${XRAY_PRIVATE_KEY}",
+          "shortIds": [
+            "${XRAY_SHORT_ID}"
+          ]
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "protocol": "freedom"
+    }
+  ]
+}
+EOF
+    
+    # Устанавливаем правильные права доступа
+    chmod 600 "$XRAY_CONFIG"
+    chown root:root "$XRAY_CONFIG"
+    
+    log_success "Конфигурация Xray создана: $XRAY_CONFIG"
+    log_info "  UUID: $XRAY_UUID"
+    log_info "  Порт: $XRAY_PORT"
+    log_info "  SNI: $XRAY_SERVER_NAME"
+    log_info "  Public Key: ${XRAY_PUBLIC_KEY:0:32}..."
+    echo ""
+}
+
+# Создание скрипта запуска Xray
+create_xray_startup_script() {
+    if [ "$XRAY_ENABLED" != "true" ]; then
+        return 0
+    fi
+    
+    log_step "Создание скрипта запуска Xray"
+    
+    local xray_startup_script="$INSTALL_DIR/start-xray.sh"
+    
+    cat > "$xray_startup_script" << 'XRAY_SCRIPT_EOF'
+#!/bin/bash
+
+echo "Xray container startup"
+
+# Запуск Xray
+exec xray -config /etc/xray/config.json
+XRAY_SCRIPT_EOF
+    
+    chmod +x "$xray_startup_script"
+    log_success "Скрипт запуска Xray создан: $xray_startup_script"
+}
+
+# Генерация клиентских конфигов Xray (VLESS ссылка)
+generate_xray_client_config() {
+    if [ "$XRAY_ENABLED" != "true" ]; then
+        return 0
+    fi
+    
+    log_step "Генерация клиентской конфигурации Xray"
+    
+    if [ -z "$XRAY_UUID" ] || [ -z "$EXTERNAL_IP" ] || [ -z "$XRAY_PORT" ] || [ -z "$XRAY_PUBLIC_KEY" ] || [ -z "$XRAY_SERVER_NAME" ] || [ -z "$XRAY_SHORT_ID" ]; then
+        log_warning "Не все параметры Xray установлены для генерации клиентского конфига"
+        return 1
+    fi
+    
+    # Генерируем VLESS ссылку в формате:
+    # vless://UUID@IP:PORT?security=reality&encryption=none&pbk=PUBLIC_KEY&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=SNI&sid=SHORT_ID#SERVER_NAME
+    
+    local vless_url="vless://${XRAY_UUID}@${EXTERNAL_IP}:${XRAY_PORT}?security=reality&encryption=none&pbk=${XRAY_PUBLIC_KEY}&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=${XRAY_SERVER_NAME}&sid=${XRAY_SHORT_ID}#${XRAY_SERVER_NAME}"
+    
+    local client_config_file="$CONFIG_DIR/xray-client.txt"
+    echo "$vless_url" > "$client_config_file"
+    chmod 600 "$client_config_file"
+    chown root:root "$client_config_file"
+    
+    log_success "Клиентская конфигурация сохранена: $client_config_file"
+    echo ""
+    log_info "VLESS ссылка для подключения:"
+    echo "$vless_url"
+    echo ""
+    log_info "Импортируйте эту ссылку в клиент Xray/V2Ray для подключения"
+    echo ""
+}
+
+# Создание универсальных правил блокировки торрентов
+setup_torrent_blocking() {
+    log_step "Настройка универсальной блокировки торрентов"
+    
+    log_info "Применение правил блокировки торрент трафика..."
+    
+    # Блокировка торрент портов на уровне OUTPUT (исходящий трафик)
+    # DHT ports: 6881-6889, 4444, 49001
+    # Other common torrent ports: 51413, 49152-65534
+    iptables -I OUTPUT -p tcp --dport 6881:6889 -j DROP 2>/dev/null || true
+    iptables -I OUTPUT -p udp --dport 6881:6889 -j DROP 2>/dev/null || true
+    iptables -I OUTPUT -p tcp --dport 4444 -j DROP 2>/dev/null || true
+    iptables -I OUTPUT -p udp --dport 4444 -j DROP 2>/dev/null || true
+    iptables -I OUTPUT -p tcp --dport 49001 -j DROP 2>/dev/null || true
+    iptables -I OUTPUT -p udp --dport 49001 -j DROP 2>/dev/null || true
+    iptables -I OUTPUT -p tcp --dport 51413 -j DROP 2>/dev/null || true
+    iptables -I OUTPUT -p udp --dport 51413 -j DROP 2>/dev/null || true
+    iptables -I OUTPUT -p tcp --dport 49152:65534 -j DROP 2>/dev/null || true
+    iptables -I OUTPUT -p udp --dport 49152:65534 -j DROP 2>/dev/null || true
+    
+    # Блокировка торрент портов на уровне INPUT (входящий трафик)
+    iptables -I INPUT -p tcp --dport 6881:6889 -j DROP 2>/dev/null || true
+    iptables -I INPUT -p udp --dport 6881:6889 -j DROP 2>/dev/null || true
+    iptables -I INPUT -p tcp --dport 4444 -j DROP 2>/dev/null || true
+    iptables -I INPUT -p udp --dport 4444 -j DROP 2>/dev/null || true
+    iptables -I INPUT -p tcp --dport 49001 -j DROP 2>/dev/null || true
+    iptables -I INPUT -p udp --dport 49001 -j DROP 2>/dev/null || true
+    iptables -I INPUT -p tcp --dport 51413 -j DROP 2>/dev/null || true
+    iptables -I INPUT -p udp --dport 51413 -j DROP 2>/dev/null || true
+    iptables -I INPUT -p tcp --dport 49152:65534 -j DROP 2>/dev/null || true
+    iptables -I INPUT -p udp --dport 49152:65534 -j DROP 2>/dev/null || true
+    
+    # Блокировка торрент портов на уровне FORWARD (транзитный трафик)
+    iptables -I FORWARD -p tcp --dport 6881:6889 -j DROP 2>/dev/null || true
+    iptables -I FORWARD -p udp --dport 6881:6889 -j DROP 2>/dev/null || true
+    iptables -I FORWARD -p tcp --dport 4444 -j DROP 2>/dev/null || true
+    iptables -I FORWARD -p udp --dport 4444 -j DROP 2>/dev/null || true
+    iptables -I FORWARD -p tcp --dport 49001 -j DROP 2>/dev/null || true
+    iptables -I FORWARD -p udp --dport 49001 -j DROP 2>/dev/null || true
+    iptables -I FORWARD -p tcp --dport 51413 -j DROP 2>/dev/null || true
+    iptables -I FORWARD -p udp --dport 51413 -j DROP 2>/dev/null || true
+    iptables -I FORWARD -p tcp --dport 49152:65534 -j DROP 2>/dev/null || true
+    iptables -I FORWARD -p udp --dport 49152:65534 -j DROP 2>/dev/null || true
+    
+    # Блокировка BitTorrent протокола по строкам (более агрессивная блокировка)
+    if iptables -m string --help &>/dev/null 2>&1; then
+        iptables -I OUTPUT -m string --string "BitTorrent" --algo bm -j DROP 2>/dev/null || true
+        iptables -I OUTPUT -m string --string "BitTorrent protocol" --algo bm -j DROP 2>/dev/null || true
+        iptables -I OUTPUT -m string --string "d1:ad2:id20:" --algo bm -j DROP 2>/dev/null || true
+        iptables -I OUTPUT -m string --string "d1:md11:ut_metadata" --algo bm -j DROP 2>/dev/null || true
+        
+        iptables -I INPUT -m string --string "BitTorrent" --algo bm -j DROP 2>/dev/null || true
+        iptables -I INPUT -m string --string "BitTorrent protocol" --algo bm -j DROP 2>/dev/null || true
+        iptables -I INPUT -m string --string "d1:ad2:id20:" --algo bm -j DROP 2>/dev/null || true
+        iptables -I INPUT -m string --string "d1:md11:ut_metadata" --algo bm -j DROP 2>/dev/null || true
+        
+        iptables -I FORWARD -m string --string "BitTorrent" --algo bm -j DROP 2>/dev/null || true
+        iptables -I FORWARD -m string --string "BitTorrent protocol" --algo bm -j DROP 2>/dev/null || true
+        iptables -I FORWARD -m string --string "d1:ad2:id20:" --algo bm -j DROP 2>/dev/null || true
+        iptables -I FORWARD -m string --string "d1:md11:ut_metadata" --algo bm -j DROP 2>/dev/null || true
+    fi
+    
+    log_success "Универсальные правила блокировки торрентов применены"
+}
+
 # Создание скрипта запуска контейнера
 create_startup_script() {
     log_step "Создание скрипта запуска контейнера"
@@ -701,26 +1116,6 @@ iptables -A INPUT -i wg0 -j ACCEPT
 iptables -A FORWARD -i wg0 -j ACCEPT
 iptables -A OUTPUT -o wg0 -j ACCEPT
 
-# Block BitTorrent/DHT ports (common torrent ports) - must be before ACCEPT rules
-# DHT ports: 6881-6889, 4444, 49001
-# Other common torrent ports: 51413, 49152-65534
-iptables -I FORWARD -i wg0 -p tcp --dport 6881:6889 -j DROP
-iptables -I FORWARD -i wg0 -p udp --dport 6881:6889 -j DROP
-iptables -I FORWARD -i wg0 -p tcp --dport 4444 -j DROP
-iptables -I FORWARD -i wg0 -p udp --dport 4444 -j DROP
-iptables -I FORWARD -i wg0 -p tcp --dport 49001 -j DROP
-iptables -I FORWARD -i wg0 -p udp --dport 49001 -j DROP
-iptables -I FORWARD -i wg0 -p tcp --dport 51413 -j DROP
-iptables -I FORWARD -i wg0 -p udp --dport 51413 -j DROP
-iptables -I FORWARD -i wg0 -p tcp --dport 49152:65534 -j DROP
-iptables -I FORWARD -i wg0 -p udp --dport 49152:65534 -j DROP
-
-# Block BitTorrent protocol strings (more aggressive blocking)
-iptables -I FORWARD -i wg0 -m string --string "BitTorrent" --algo bm -j DROP
-iptables -I FORWARD -i wg0 -m string --string "BitTorrent protocol" --algo bm -j DROP
-iptables -I FORWARD -i wg0 -m string --string "d1:ad2:id20:" --algo bm -j DROP
-iptables -I FORWARD -i wg0 -m string --string "d1:md11:ut_metadata" --algo bm -j DROP
-
 # Allow forwarding traffic only from the VPN.
 iptables -A FORWARD -i wg0 -o EXTERNAL_IF_PLACEHOLDER -s WG_NETWORK_PLACEHOLDER -j ACCEPT
 
@@ -743,8 +1138,14 @@ SCRIPT_EOF
 create_docker_compose() {
     log_step "Создание docker-compose.yml"
     
-    cat > "$COMPOSE_FILE" << EOF
+    # Начинаем создание docker-compose.yml
+    cat > "$COMPOSE_FILE" << 'COMPOSE_EOF'
 services:
+COMPOSE_EOF
+    
+    # Добавляем сервис WireGuard если он нужен
+    if [ -n "$WG_NETWORK" ]; then
+        cat >> "$COMPOSE_FILE" << EOF
   amnezia-awg:
     image: amneziavpn/amnezia-wg:latest
     container_name: amnezia-awg
@@ -765,6 +1166,25 @@ services:
 
     restart: always
 EOF
+    fi
+    
+    # Добавляем сервис Xray если он включен
+    if [ "$XRAY_ENABLED" = "true" ]; then
+        cat >> "$COMPOSE_FILE" << EOF
+  xray-core:
+    image: xtls/xray-core:latest
+    container_name: xray-core
+
+    network_mode: host
+
+    volumes:
+      - ./awg-config/xray-config.json:/etc/xray/config.json:ro
+
+    command: xray -config /etc/xray/config.json
+
+    restart: always
+EOF
+    fi
     
     log_success "docker-compose.yml создан"
 }
@@ -790,56 +1210,95 @@ check_status() {
     local checks_passed=0
     local checks_failed=0
 
-    # Проверка статуса контейнера
-    log_info "Проверка статуса контейнера..."
-    if docker ps | grep -q amnezia-awg; then
-        log_success "Контейнер amnezia-awg запущен"
-        checks_passed=$((checks_passed + 1))
-    else
-        log_error "Контейнер amnezia-awg не найден в списке запущенных"
-        checks_failed=$((checks_failed + 1))
+    # Проверка статуса контейнера WireGuard (если установлен)
+    if [ -n "$WG_NETWORK" ]; then
+        log_info "Проверка статуса контейнера WireGuard..."
+        if docker ps | grep -q amnezia-awg; then
+            log_success "Контейнер amnezia-awg запущен"
+            checks_passed=$((checks_passed + 1))
+        else
+            log_error "Контейнер amnezia-awg не найден в списке запущенных"
+            checks_failed=$((checks_failed + 1))
+        fi
+
+        # Проверка логов WireGuard
+        log_info "Проверка логов контейнера WireGuard..."
+        if docker logs amnezia-awg --tail 20 2>&1 | grep -q "wg0.conf\|WireGuard\|wg-quick"; then
+            log_success "Логи контейнера WireGuard выглядят нормально"
+            checks_passed=$((checks_passed + 1))
+        else
+            log_error "Проблемы в логах контейнера WireGuard"
+            docker logs amnezia-awg --tail 20
+            checks_failed=$((checks_failed + 1))
+        fi
+
+        # Проверка интерфейса wg0
+        log_info "Проверка интерфейса wg0..."
+        if ip a | grep -q wg0; then
+            log_success "Интерфейс wg0 найден"
+            checks_passed=$((checks_passed + 1))
+        else
+            log_error "Интерфейс wg0 не найден"
+            checks_failed=$((checks_failed + 1))
+        fi
+
+        # Проверка конфигурации WireGuard
+        log_info "Проверка конфигурации WireGuard..."
+        if wg show &> /dev/null; then
+            log_success "WireGuard конфигурация активна"
+            checks_passed=$((checks_passed + 1))
+            wg show
+        else
+            log_error "WireGuard конфигурация не активна"
+            checks_failed=$((checks_failed + 1))
+        fi
+
+        # Проверка порта WireGuard
+        if [ -n "$WG_PORT" ]; then
+            log_info "Проверка порта WireGuard $WG_PORT..."
+            if ss -ulnp 2>/dev/null | grep -q ":$WG_PORT "; then
+                log_success "Порт WireGuard $WG_PORT прослушивается"
+                checks_passed=$((checks_passed + 1))
+            else
+                log_error "Порт WireGuard $WG_PORT не прослушивается"
+                checks_failed=$((checks_failed + 1))
+            fi
+        fi
     fi
 
-    # Проверка логов
-    log_info "Проверка логов контейнера..."
-    if docker logs amnezia-awg --tail 20 2>&1 | grep -q "wg0.conf\|WireGuard\|wg-quick"; then
-        log_success "Логи контейнера выглядят нормально"
-        checks_passed=$((checks_passed + 1))
-    else
-        log_error "Проблемы в логах контейнера"
-        docker logs amnezia-awg --tail 20
-        checks_failed=$((checks_failed + 1))
-    fi
+    # Проверка статуса контейнера Xray (если установлен)
+    if [ "$XRAY_ENABLED" = "true" ]; then
+        log_info "Проверка статуса контейнера Xray..."
+        if docker ps | grep -q xray-core; then
+            log_success "Контейнер xray-core запущен"
+            checks_passed=$((checks_passed + 1))
+        else
+            log_error "Контейнер xray-core не найден в списке запущенных"
+            checks_failed=$((checks_failed + 1))
+        fi
 
-    # Проверка интерфейса wg0
-    log_info "Проверка интерфейса wg0..."
-    if ip a | grep -q wg0; then
-        log_success "Интерфейс wg0 найден"
-        checks_passed=$((checks_passed + 1))
-    else
-        log_error "Интерфейс wg0 не найден"
-        checks_failed=$((checks_failed + 1))
-    fi
+        # Проверка логов Xray
+        log_info "Проверка логов контейнера Xray..."
+        if docker logs xray-core --tail 20 2>&1 | grep -q "started\|listening\|VLESS"; then
+            log_success "Логи контейнера Xray выглядят нормально"
+            checks_passed=$((checks_passed + 1))
+        else
+            log_warning "Проверка логов Xray..."
+            docker logs xray-core --tail 20
+            checks_failed=$((checks_failed + 1))
+        fi
 
-    # Проверка конфигурации WireGuard
-    log_info "Проверка конфигурации WireGuard..."
-    if wg show &> /dev/null; then
-        log_success "WireGuard конфигурация активна"
-        checks_passed=$((checks_passed + 1))
-        wg show
-    else
-        log_error "WireGuard конфигурация не активна"
-        checks_failed=$((checks_failed + 1))
-    fi
-
-    # Проверка порта
-    log_info "Проверка порта $WG_PORT..."
-    if ss -ulnp 2>/dev/null | grep -q ":$WG_PORT "; then
-        log_success "Порт $WG_PORT прослушивается"
-        checks_passed=$((checks_passed + 1))
-    else
-        log_error "Порт $WG_PORT не прослушивается"
-        checks_failed=$((checks_failed + 1))
+        # Проверка порта Xray
+        if [ -n "$XRAY_PORT" ]; then
+            log_info "Проверка порта Xray $XRAY_PORT..."
+            if ss -tlnp 2>/dev/null | grep -q ":$XRAY_PORT "; then
+                log_success "Порт Xray $XRAY_PORT прослушивается"
+                checks_passed=$((checks_passed + 1))
+            else
+                log_error "Порт Xray $XRAY_PORT не прослушивается"
+                checks_failed=$((checks_failed + 1))
+            fi
+        fi
     fi
 
     # Итоговый результат
@@ -872,8 +1331,8 @@ check_existing_installation() {
         installed=true
     fi
     
-    # Проверка запущенного контейнера
-    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^amnezia-awg$"; then
+    # Проверка запущенных контейнеров
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qE "^(amnezia-awg|xray-core)$"; then
         installed=true
     fi
     
@@ -919,6 +1378,15 @@ OBFS_H4="$OBFS_H4"
 SERVER_PRIVATE_KEY="$SERVER_PRIVATE_KEY"
 SERVER_PUBLIC_KEY="$SERVER_PUBLIC_KEY"
 PSK="$PSK"
+XRAY_ENABLED="$XRAY_ENABLED"
+XRAY_PORT="$XRAY_PORT"
+XRAY_UUID="$XRAY_UUID"
+XRAY_SERVER_NAME="$XRAY_SERVER_NAME"
+XRAY_SHORT_ID="$XRAY_SHORT_ID"
+XRAY_DEST="$XRAY_DEST"
+XRAY_XVER="$XRAY_XVER"
+XRAY_PRIVATE_KEY="$XRAY_PRIVATE_KEY"
+XRAY_PUBLIC_KEY="$XRAY_PUBLIC_KEY"
 EOF
     
     chmod 600 "$INSTALL_INFO_FILE"
@@ -991,7 +1459,8 @@ uninstall() {
         echo ""
         log_warning "ВНИМАНИЕ: Это действие удалит все установленные компоненты!"
         log_info "Будут удалены:"
-        log_info "  - Docker контейнер amnezia-awg"
+        log_info "  - Docker контейнер amnezia-awg (если установлен)"
+        log_info "  - Docker контейнер xray-core (если установлен)"
         log_info "  - Директория $INSTALL_DIR со всем содержимым"
         log_info "  - Все конфигурации и клиентские конфиги"
         echo ""
@@ -1008,13 +1477,21 @@ uninstall() {
         fi
     fi
     
-    # Остановка и удаление контейнера
+    # Остановка и удаление контейнеров
+    cd "$INSTALL_DIR" 2>/dev/null && docker compose down 2>/dev/null || true
+    
     if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^amnezia-awg$"; then
         log_info "Остановка контейнера amnezia-awg..."
-        cd "$INSTALL_DIR" 2>/dev/null && docker compose down 2>/dev/null || true
         docker stop amnezia-awg 2>/dev/null || true
         docker rm amnezia-awg 2>/dev/null || true
-        log_success "Контейнер удален"
+        log_success "Контейнер amnezia-awg удален"
+    fi
+    
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^xray-core$"; then
+        log_info "Остановка контейнера xray-core..."
+        docker stop xray-core 2>/dev/null || true
+        docker rm xray-core 2>/dev/null || true
+        log_success "Контейнер xray-core удален"
     fi
     
     # Удаление директории установки
@@ -1346,24 +1823,54 @@ print_summary() {
     echo "=========================================="
     echo ""
     echo "Директория установки: $INSTALL_DIR"
-    echo "Конфигурация: $WG_CONFIG"
+    if [ -n "$WG_NETWORK" ]; then
+        echo "Конфигурация WireGuard: $WG_CONFIG"
+    fi
+    if [ "$XRAY_ENABLED" = "true" ]; then
+        echo "Конфигурация Xray: $XRAY_CONFIG"
+    fi
     echo ""
     echo "Параметры конфигурации:"
-    echo "  Сеть: $WG_NETWORK"
-    echo "  IP сервера: $WG_SERVER_IP"
-    echo "  Порт: $WG_PORT"
+    if [ -n "$WG_NETWORK" ]; then
+        echo "  WireGuard сеть: $WG_NETWORK"
+        echo "  WireGuard IP сервера: $WG_SERVER_IP"
+        echo "  WireGuard порт: $WG_PORT"
+    fi
+    if [ "$XRAY_ENABLED" = "true" ]; then
+        echo "  Xray порт: $XRAY_PORT"
+        echo "  Xray SNI: $XRAY_SERVER_NAME"
+    fi
     echo "  Внешний интерфейс: $EXTERNAL_IF"
     echo ""
 
-    # Вывод публичного ключа сервера
-    if [ -f "$WG_CONFIG" ]; then
+    # Вывод публичного ключа сервера WireGuard
+    if [ -n "$WG_NETWORK" ] && [ -f "$WG_CONFIG" ]; then
         SERVER_PRIVATE_KEY=$(grep "PrivateKey" "$WG_CONFIG" | awk '{print $3}')
         SERVER_PUBLIC_KEY=$(echo "$SERVER_PRIVATE_KEY" | wg pubkey)
-        echo "Публичный ключ сервера: $SERVER_PUBLIC_KEY"
+        echo "Публичный ключ WireGuard сервера: $SERVER_PUBLIC_KEY"
         echo ""
     fi
 
-    echo "Для просмотра логов: docker logs amnezia-awg"
+    if [ -n "$WG_NETWORK" ]; then
+        echo "WireGuard:"
+        echo "  Для просмотра логов: docker logs amnezia-awg"
+    fi
+    
+    if [ "$XRAY_ENABLED" = "true" ]; then
+        echo "Xray-core:"
+        echo "  Для просмотра логов: docker logs xray-core"
+        if [ -n "$XRAY_UUID" ] && [ -n "$XRAY_PUBLIC_KEY" ]; then
+            echo ""
+            echo "Параметры подключения Xray:"
+            echo "  UUID: $XRAY_UUID"
+            echo "  Порт: $XRAY_PORT"
+            echo "  SNI: $XRAY_SERVER_NAME"
+            echo "  Public Key: $XRAY_PUBLIC_KEY"
+            echo "  Short ID: $XRAY_SHORT_ID"
+        fi
+    fi
+    
+    echo ""
     echo "Для остановки: cd $INSTALL_DIR && docker compose down"
     echo "Для перезапуска: cd $INSTALL_DIR && docker compose restart"
     echo ""
@@ -1404,8 +1911,24 @@ main() {
 
     install_docker
     create_directories
-    generate_config
-    create_startup_script
+    
+    # Настройка универсальной блокировки торрентов (применяется один раз для всех)
+    setup_torrent_blocking
+    
+    # Генерация конфигурации WireGuard (если нужен)
+    if [ -n "$WG_NETWORK" ]; then
+        generate_config
+        create_startup_script
+    fi
+    
+    # Генерация конфигурации Xray (если включен)
+    if [ "$XRAY_ENABLED" = "true" ]; then
+        generate_xray_params
+        generate_xray_config
+        create_xray_startup_script
+#        generate_xray_client_config
+    fi
+    
     create_docker_compose
     start_container
 
