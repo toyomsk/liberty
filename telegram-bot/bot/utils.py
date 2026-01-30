@@ -240,16 +240,35 @@ def get_server_status(docker_compose_dir: str, vpn_config_dir: str) -> str:
         docker_status = "Контейнер не найден"
         try:
             result = subprocess.run(
-                ['docker', 'ps', '--filter', 'name=amnezia-awg', '--format', 'table {{.Names}}\t{{.Status}}'],
+                ['docker', 'ps', '--filter', 'name=liberty-wg', '--format', 'table {{.Names}}\t{{.Status}}'],
                 capture_output=True,
                 text=True,
                 cwd=docker_compose_dir,
                 timeout=10
             )
             if result.returncode == 0 and result.stdout.strip():
-                docker_status = result.stdout.strip()
+                out = result.stdout.strip()
+                if "liberty-wg" in out:
+                    docker_status = out
+                else:
+                    docker_status = "Контейнер не запущен"
         except Exception as e:
             logger.error(f"Ошибка проверки статуса Docker: {e}")
+
+        # Статус Xray
+        xray_status = "Не запущен"
+        try:
+            result = subprocess.run(
+                ['docker', 'ps', '--filter', 'name=xray-core', '--format', '{{.Names}}'],
+                capture_output=True,
+                text=True,
+                cwd=docker_compose_dir,
+                timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip() and "xray-core" in result.stdout:
+                xray_status = "Запущен"
+        except Exception as e:
+            logger.error("Ошибка проверки статуса Xray: %s", e)
         
         # WireGuard статус
         wg_info = "WireGuard интерфейс не активен"
@@ -284,18 +303,21 @@ def get_server_status(docker_compose_dir: str, vpn_config_dir: str) -> str:
         
         external_ip = get_external_ip()
         
-        # Используем code блок для Docker статуса, чтобы избежать проблем с экранированием
         escaped_wg_info = escape_markdown_v2(wg_info)
         escaped_external_ip = escape_markdown_v2(external_ip)
+        escaped_xray_status = escape_markdown_v2(xray_status)
         status = f"""🖥 *Статус сервера:*
 
-📦 *Docker:*
+📦 *Docker \\(WG\\):*
 ```
 {docker_status}
 ```
 
 🔐 *WireGuard:*
 {escaped_wg_info}
+
+📡 *Xray \\(VLESS\\):*
+{escaped_xray_status}
 
 🌐 *Внешний IP:* `{escaped_external_ip}`
 """
@@ -306,20 +328,20 @@ def get_server_status(docker_compose_dir: str, vpn_config_dir: str) -> str:
         return f"❌ Ошибка при получении статуса: {e}"
 
 def _get_container_name() -> Optional[str]:
-    """Получить имя контейнера Amnezia."""
+    """Получить имя контейнера WG (liberty-wg)."""
     try:
         result = subprocess.run(
-            ['docker', 'ps', '--filter', 'name=amnezia-awg', '--format', '{{.Names}}'],
+            ['docker', 'ps', '--filter', 'name=liberty-wg', '--format', '{{.Names}}'],
             capture_output=True,
             text=True,
             timeout=5
         )
         if result.returncode == 0 and result.stdout.strip():
             container_name = result.stdout.strip().split('\n')[0]
-            logger.info(f"Найден контейнер: {container_name}")
+            logger.info("Найден контейнер: %s", container_name)
             return container_name
     except Exception as e:
-        logger.warning(f"Не удалось найти контейнер: {e}")
+        logger.warning("Не удалось найти контейнер: %s", e)
     return None
 
 def _run_wg_in_container(cmd: list, container_name: Optional[str] = None) -> subprocess.CompletedProcess:
