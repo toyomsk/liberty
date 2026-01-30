@@ -924,15 +924,18 @@ generate_xray_params() {
         log_info "Генерация x25519 ключей через контейнер Xray..."
         docker pull teddysun/xray:latest -q >/dev/null 2>&1 || true
         local key_output
-        # Замена CMD: контейнер запускает /usr/bin/xray x25519 (вывод: Private key: ... Public key: ...)
-        key_output=$(docker run --rm teddysun/xray:latest /usr/bin/xray x25519 2>/dev/null) || \
-        key_output=$(docker run --rm --entrypoint /usr/bin/xray teddysun/xray:latest x25519 2>/dev/null) || true
-        if echo "$key_output" | grep -q "Private key:"; then
-            XRAY_PRIVATE_KEY=$(echo "$key_output" | grep "Private key:" | sed 's/.*Private key:[[:space:]]*//' | tr -d '\r\n')
-            XRAY_PUBLIC_KEY=$(echo "$key_output" | grep "Public key:" | sed 's/.*Public key:[[:space:]]*//' | tr -d '\r\n')
-        elif echo "$key_output" | grep -q "Private:"; then
-            XRAY_PRIVATE_KEY=$(echo "$key_output" | grep "Private:" | awk '{print $2}')
-            XRAY_PUBLIC_KEY=$(echo "$key_output" | grep "Public:" | awk '{print $2}')
+        # x25519: вывод в stdout/stderr. Если у образа ENTRYPOINT=xray, то без --entrypoint "" получится xray /usr/bin/xray x25519 → ошибка
+        key_output=$(docker run --rm --entrypoint "" teddysun/xray:latest /usr/bin/xray x25519 2>&1) || \
+        key_output=$(docker run --rm teddysun/xray:latest /usr/bin/xray x25519 2>&1) || \
+        key_output=$(docker run --rm --entrypoint /usr/bin/xray teddysun/xray:latest x25519 2>&1) || true
+        # Разбор вывода (xray: "Private key:" / "Public key:" или "Private:" / "Public:", регистр может отличаться)
+        if echo "$key_output" | grep -qi "private.*key"; then
+            XRAY_PRIVATE_KEY=$(echo "$key_output" | grep -i "Private key:" | sed 's/.*[Pp]rivate [Kk]ey:[[:space:]]*//' | tr -d '\r\n' | head -1)
+            XRAY_PUBLIC_KEY=$(echo "$key_output" | grep -i "Public key:" | sed 's/.*[Pp]ublic [Kk]ey:[[:space:]]*//' | tr -d '\r\n' | head -1)
+        fi
+        if [ -z "$XRAY_PRIVATE_KEY" ] && echo "$key_output" | grep -q "Private:"; then
+            XRAY_PRIVATE_KEY=$(echo "$key_output" | grep "Private:" | awk '{print $2}' | tr -d '\r\n' | head -1)
+            XRAY_PUBLIC_KEY=$(echo "$key_output" | grep "Public:" | awk '{print $2}' | tr -d '\r\n' | head -1)
         fi
         [ -n "$XRAY_PRIVATE_KEY" ] && [ -n "$XRAY_PUBLIC_KEY" ] && keys_generated=true
     fi
