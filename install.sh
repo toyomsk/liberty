@@ -1246,6 +1246,15 @@ open_firewall_wg_port() {
             iptables -I INPUT -p udp --dport "$WG_PORT" -j ACCEPT 2>/dev/null || true
             log_success "Порт $WG_PORT открыт в iptables"
         fi
+        # Разрешить FORWARD для VPN (policy DROP иначе режет трафик клиентов)
+        if ! iptables -C FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null; then
+            iptables -I FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+            log_info "Правило FORWARD ESTABLISHED,RELATED добавлено"
+        fi
+        if ! iptables -C FORWARD -i wg0 -j ACCEPT 2>/dev/null; then
+            iptables -I FORWARD -i wg0 -j ACCEPT 2>/dev/null || true
+            log_info "Правило FORWARD из wg0 добавлено"
+        fi
         save_iptables_rules
     fi
 }
@@ -1731,6 +1740,8 @@ uninstall() {
             ufw delete allow "${uninstall_wg_port}/udp" 2>/dev/null || true
         else
             iptables -D INPUT -p udp --dport "$uninstall_wg_port" -j ACCEPT 2>/dev/null || true
+            iptables -D FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT 2>/dev/null || true
+            iptables -D FORWARD -i wg0 -j ACCEPT 2>/dev/null || true
         fi
         log_info "Правило для WireGuard (порт $uninstall_wg_port) удалено"
     fi
@@ -2327,7 +2338,7 @@ main() {
     create_directories
     
     # Настройка универсальной блокировки торрентов (применяется один раз для всех)
-#    setup_torrent_blocking
+    setup_torrent_blocking
     open_firewall_wg_port
     open_firewall_xray_port
 
