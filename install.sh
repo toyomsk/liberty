@@ -11,6 +11,7 @@ NC='\033[0m' # No Color
 
 # Переменные
 INSTALL_DIR="/opt/docker/liberty"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 # Директория, из которой вызвали скрипт (для поиска telegram-bot при запуске из клона репозитория)
 INITIAL_CWD="${INITIAL_CWD:-$(pwd)}"
 CONFIG_DIR="$INSTALL_DIR/config"
@@ -1517,8 +1518,6 @@ load_install_info() {
 
 # Установка Telegram-бота: копируем ./telegram-bot в /opt/telegram-bot и запускаем там install.sh
 install_bot() {
-    local SCRIPT_DIR
-    SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
     local BOT_DEST="/opt/telegram-bot"
 
     log_step "Установка Telegram-бота"
