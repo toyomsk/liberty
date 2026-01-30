@@ -888,19 +888,17 @@ generate_xray_params() {
     
     log_step "Генерация параметров Xray"
     
-    # Генерация UUID для VLESS
-    log_info "Генерация UUID для VLESS..."
-    if command -v uuidgen &> /dev/null; then
-        XRAY_UUID=$(uuidgen)
-    elif [ -f /proc/sys/kernel/random/uuid ]; then
-        XRAY_UUID=$(cat /proc/sys/kernel/random/uuid)
-    else
-        # Fallback: генерируем UUID вручную
-        XRAY_UUID=$(od -x /dev/urandom | head -1 | awk '{OFS="-"; print $2$3,$4,$5,$6,$7$8$9}')
+    # Генерация UUID и x25519 только через контейнер Xray (Docker обязателен)
+    if ! command -v docker &> /dev/null || ! docker info &> /dev/null; then
+        log_error "Для Xray нужен Docker. Установите Docker и запустите скрипт снова."
+        exit 1
     fi
-    
+    docker pull teddysun/xray:latest -q >/dev/null 2>&1 || true
+
+    log_info "Генерация UUID для VLESS через контейнер Xray..."
+    XRAY_UUID=$(docker run --rm --entrypoint "" teddysun/xray:latest /usr/bin/xray uuid 2>/dev/null | tr -d '\r\n') || true
     if [ -z "$XRAY_UUID" ]; then
-        log_error "Не удалось сгенерировать UUID"
+        log_error "Не удалось сгенерировать UUID через контейнер Xray"
         exit 1
     fi
     log_success "UUID сгенерирован: $XRAY_UUID"
@@ -914,56 +912,26 @@ generate_xray_params() {
     fi
     log_success "Short ID сгенерирован: $XRAY_SHORT_ID"
     
-    # Генерация ключей для Reality (private/public key pair) — только настоящие x25519
-    log_info "Генерация ключей Reality..."
-    local keys_generated=false
-    
-    # Генерация через контейнер teddysun/xray (как в документации Xray: xray x25519)
-    # Образ использует CMD ["/usr/bin/xray", "-config", ...] — аргументы после образа заменяют CMD
-    if command -v docker &> /dev/null && docker info &> /dev/null; then
-        log_info "Генерация x25519 ключей через контейнер Xray..."
-        docker pull teddysun/xray:latest -q >/dev/null 2>&1 || true
-        local key_output
-        # x25519: вывод в stdout/stderr. Если у образа ENTRYPOINT=xray, то без --entrypoint "" получится xray /usr/bin/xray x25519 → ошибка
-        key_output=$(docker run --rm --entrypoint "" teddysun/xray:latest /usr/bin/xray x25519 2>&1) || \
-        key_output=$(docker run --rm teddysun/xray:latest /usr/bin/xray x25519 2>&1) || \
-        key_output=$(docker run --rm --entrypoint /usr/bin/xray teddysun/xray:latest x25519 2>&1) || true
-        # Разбор вывода (xray: "Private key:" / "Public key:" или "Private:" / "Public:", регистр может отличаться)
-        if echo "$key_output" | grep -qi "private.*key"; then
-            XRAY_PRIVATE_KEY=$(echo "$key_output" | grep -i "Private key:" | sed 's/.*[Pp]rivate [Kk]ey:[[:space:]]*//' | tr -d '\r\n' | head -1)
-            XRAY_PUBLIC_KEY=$(echo "$key_output" | grep -i "Public key:" | sed 's/.*[Pp]ublic [Kk]ey:[[:space:]]*//' | tr -d '\r\n' | head -1)
-        fi
-        if [ -z "$XRAY_PRIVATE_KEY" ] && echo "$key_output" | grep -q "Private:"; then
-            XRAY_PRIVATE_KEY=$(echo "$key_output" | grep "Private:" | awk '{print $2}' | tr -d '\r\n' | head -1)
-            XRAY_PUBLIC_KEY=$(echo "$key_output" | grep "Public:" | awk '{print $2}' | tr -d '\r\n' | head -1)
-        fi
-        [ -n "$XRAY_PRIVATE_KEY" ] && [ -n "$XRAY_PUBLIC_KEY" ] && keys_generated=true
+    # Генерация x25519 ключей Reality только через контейнер Xray
+    log_info "Генерация x25519 ключей Reality через контейнер Xray..."
+    local key_output
+    key_output=$(docker run --rm --entrypoint "" teddysun/xray:latest /usr/bin/xray x25519 2>&1) || \
+    key_output=$(docker run --rm teddysun/xray:latest /usr/bin/xray x25519 2>&1) || \
+    key_output=$(docker run --rm --entrypoint /usr/bin/xray teddysun/xray:latest x25519 2>&1) || true
+    if echo "$key_output" | grep -qi "Private key:"; then
+        XRAY_PRIVATE_KEY=$(echo "$key_output" | grep -i "Private key:" | sed 's/.*[Pp]rivate [Kk]ey:[[:space:]]*//' | tr -d '\r\n' | head -1)
+        XRAY_PUBLIC_KEY=$(echo "$key_output" | grep -i "Public key:" | sed 's/.*[Pp]ublic [Kk]ey:[[:space:]]*//' | tr -d '\r\n' | head -1)
     fi
-    
-    # Fallback: OpenSSL x25519 (настоящие ключи, не случайные байты)
-    if [ "$keys_generated" != "true" ]; then
-        log_info "Генерация x25519 ключей через OpenSSL..."
-        local priv_der_file pub_der_file
-        priv_der_file=$(mktemp)
-        pub_der_file=$(mktemp)
-        if openssl genpkey -algorithm X25519 -outform DER 2>/dev/null > "$priv_der_file" && [ -s "$priv_der_file" ]; then
-            # В PKCS#8 DER для X25519 структура 48 байт, последние 32 — сырой приватный ключ
-            # Xray ожидает base64 без padding (как вывод xray x25519)
-            XRAY_PRIVATE_KEY=$(tail -c 32 "$priv_der_file" | base64 -w 0 2>/dev/null | tr -d '=')
-            # Публичный ключ из того же приватного (читаем из DER для pkey -pubout)
-            openssl pkey -inform DER -in "$priv_der_file" -pubout -outform DER 2>/dev/null > "$pub_der_file"
-            if [ -s "$pub_der_file" ]; then
-                # В SPKI DER для X25519 (44 байта): BIT STRING 03 21 00 + 32 байта — последние 33, пропуск 0x00
-                XRAY_PUBLIC_KEY=$(tail -c 33 "$pub_der_file" | tail -c +2 | base64 -w 0 2>/dev/null | tr -d '=')
-                [ -z "$XRAY_PUBLIC_KEY" ] && XRAY_PUBLIC_KEY=$(tail -c 32 "$pub_der_file" | base64 -w 0 2>/dev/null | tr -d '=')
-                [ -n "$XRAY_PRIVATE_KEY" ] && [ -n "$XRAY_PUBLIC_KEY" ] && keys_generated=true
-            fi
-        fi
-        rm -f "$priv_der_file" "$pub_der_file"
+    if ([ -z "$XRAY_PRIVATE_KEY" ] || [ -z "$XRAY_PUBLIC_KEY" ]) && echo "$key_output" | grep -qi "PrivateKey:"; then
+        [ -z "$XRAY_PRIVATE_KEY" ] && XRAY_PRIVATE_KEY=$(echo "$key_output" | grep -i "PrivateKey:" | sed 's/.*[Pp]rivate[Kk]ey:[[:space:]]*//' | tr -d '\r\n' | head -1)
+        [ -z "$XRAY_PUBLIC_KEY" ] && XRAY_PUBLIC_KEY=$(echo "$key_output" | grep -i "Password:" | sed 's/.*[Pp]assword:[[:space:]]*//' | tr -d '\r\n' | head -1)
     fi
-    
-    if [ "$keys_generated" != "true" ]; then
-        log_error "Не удалось сгенерировать x25519 ключи (нужны Docker или OpenSSL с поддержкой X25519)"
+    if [ -z "$XRAY_PRIVATE_KEY" ] && echo "$key_output" | grep -q "Private:"; then
+        XRAY_PRIVATE_KEY=$(echo "$key_output" | grep "Private:" | awk '{print $2}' | tr -d '\r\n' | head -1)
+        [ -z "$XRAY_PUBLIC_KEY" ] && XRAY_PUBLIC_KEY=$(echo "$key_output" | grep "Public:" | awk '{print $2}' | tr -d '\r\n' | head -1)
+    fi
+    if [ -z "$XRAY_PRIVATE_KEY" ] || [ -z "$XRAY_PUBLIC_KEY" ]; then
+        log_error "Не удалось сгенерировать x25519 ключи через контейнер Xray (проверьте вывод: xray x25519)"
         exit 1
     fi
     
@@ -1183,6 +1151,28 @@ setup_torrent_blocking() {
     
     log_success "Универсальные правила блокировки торрентов применены"
     log_info "SSH порт ($ssh_port) и VPN порты исключены из блокировки"
+}
+
+# Открытие порта Xray в фаерволе (ufw или iptables)
+open_firewall_xray_port() {
+    [ "$XRAY_ENABLED" != "true" ] || [ -z "$XRAY_PORT" ] && return 0
+    log_step "Открытие порта Xray $XRAY_PORT в фаерволе"
+    if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+        if ufw status 2>/dev/null | grep -q "${XRAY_PORT}/tcp"; then
+            log_info "Порт $XRAY_PORT уже разрешён в ufw"
+        else
+            ufw allow "${XRAY_PORT}/tcp" comment 'Xray VLESS' 2>/dev/null || true
+            log_success "Порт $XRAY_PORT открыт в ufw"
+        fi
+    else
+        # iptables: разрешаем входящий TCP на порт Xray (в начало цепочки)
+        if iptables -C INPUT -p tcp --dport "$XRAY_PORT" -j ACCEPT 2>/dev/null; then
+            log_info "Порт $XRAY_PORT уже разрешён в iptables"
+        else
+            iptables -I INPUT -p tcp --dport "$XRAY_PORT" -j ACCEPT 2>/dev/null || true
+            log_success "Порт $XRAY_PORT открыт в iptables"
+        fi
+    fi
 }
 
 # Создание скрипта запуска контейнера
@@ -2015,7 +2005,8 @@ main() {
     
     # Настройка универсальной блокировки торрентов (применяется один раз для всех)
     setup_torrent_blocking
-    
+    open_firewall_xray_port
+
     # Генерация конфигурации WireGuard (если нужен)
     if [ -n "$WG_NETWORK" ]; then
         generate_config
