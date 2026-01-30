@@ -78,6 +78,12 @@ fi
 # Копируем .env.example в .env
 cp .env.example .env
 
+# Загружаем текущие значения из .env как дефолты для запросов
+while IFS= read -r line; do
+    [[ $line =~ ^[A-Za-z_][A-Za-z0-9_]*= ]] || continue
+    export "${line%%=*}=${line#*=}"
+done < .env 2>/dev/null || true
+
 # Функция для запроса значения с дефолтом
 ask_with_default() {
     local prompt=$1
@@ -102,7 +108,8 @@ echo "1. Напишите @BotFather в Telegram"
 echo "2. Отправьте /newbot"
 echo "3. Следуйте инструкциям"
 echo ""
-read -p "Введите BOT_TOKEN: " BOT_TOKEN
+read -p "Введите BOT_TOKEN [${BOT_TOKEN:-}]: " val
+if [ -n "$val" ]; then BOT_TOKEN="$val"; fi
 if [ -z "$BOT_TOKEN" ]; then
     error "BOT_TOKEN обязателен!"
     exit 1
@@ -113,34 +120,46 @@ echo ""
 echo "Для получения вашего Telegram ID:"
 echo "Напишите @userinfobot в Telegram"
 echo ""
-read -p "Введите ADMIN_IDS (через запятую, если несколько): " ADMIN_IDS
+read -p "Введите ADMIN_IDS (через запятую, если несколько) [${ADMIN_IDS:-}]: " val
+if [ -n "$val" ]; then ADMIN_IDS="$val"; fi
 if [ -z "$ADMIN_IDS" ]; then
     error "ADMIN_IDS обязателен!"
     exit 1
 fi
 
 # VPN_CONFIG_DIR
-ask_with_default "Введите VPN_CONFIG_DIR" "/opt/docker/amnezia-wg/awg-config" VPN_CONFIG_DIR
+ask_with_default "Введите VPN_CONFIG_DIR" "${VPN_CONFIG_DIR:-/opt/docker/liberty/config/wg}" VPN_CONFIG_DIR
 
 # DOCKER_COMPOSE_DIR
-ask_with_default "Введите DOCKER_COMPOSE_DIR" "/opt/docker/amnezia-wg" DOCKER_COMPOSE_DIR
+ask_with_default "Введите DOCKER_COMPOSE_DIR" "${DOCKER_COMPOSE_DIR:-/opt/docker/liberty}" DOCKER_COMPOSE_DIR
+
+# DB_PATH (пусто = clients.db в директории бота)
+ask_with_default "Введите DB_PATH (пусто = по умолчанию)" "${DB_PATH:-}" DB_PATH
+
+# CLIENT_NAME_PREFIX (пусто = без префикса)
+ask_with_default "Введите CLIENT_NAME_PREFIX (например vpn_, пусто = без префикса)" "${CLIENT_NAME_PREFIX:-}" CLIENT_NAME_PREFIX
 
 # VPN_CLIENT_START_IP
-ask_with_default "Введите VPN_CLIENT_START_IP" "2" VPN_CLIENT_START_IP
+ask_with_default "Введите VPN_CLIENT_START_IP" "${VPN_CLIENT_START_IP:-10}" VPN_CLIENT_START_IP
 
 # DNS_SERVERS
-ask_with_default "Введите DNS_SERVERS (через запятую)" "1.1.1.1,8.8.8.8" DNS_SERVERS
+ask_with_default "Введите DNS_SERVERS (через запятую)" "${DNS_SERVERS:-1.1.1.1,8.8.8.8}" DNS_SERVERS
 
 # WG_INTERFACE
-ask_with_default "Введите WG_INTERFACE" "wg0" WG_INTERFACE
+ask_with_default "Введите WG_INTERFACE" "${WG_INTERFACE:-wg0}" WG_INTERFACE
 
 # EXTERNAL_IF
-# Определяем внешний интерфейс автоматически
-DEFAULT_EXTERNAL_IF=$(ip route | grep default | awk '{print $5}' | head -1)
-if [ -z "$DEFAULT_EXTERNAL_IF" ]; then
-    DEFAULT_EXTERNAL_IF="eth0"
-fi
-ask_with_default "Введите EXTERNAL_IF (внешний сетевой интерфейс)" "$DEFAULT_EXTERNAL_IF" EXTERNAL_IF
+DEFAULT_EXTERNAL_IF=$(ip route 2>/dev/null | grep default | awk '{print $5}' | head -1)
+ask_with_default "Введите EXTERNAL_IF (внешний сетевой интерфейс)" "${EXTERNAL_IF:-${DEFAULT_EXTERNAL_IF:-eth0}}" EXTERNAL_IF
+
+# Xray (опционально)
+echo ""
+info "Xray (VLESS Reality): при пустом — бот читает из DOCKER_COMPOSE_DIR/.install_info"
+ask_with_default "Введите XRAY_CONFIG_DIR (пусто = из .install_info)" "${XRAY_CONFIG_DIR:-}" XRAY_CONFIG_DIR
+ask_with_default "Введите XRAY_PUBLIC_KEY (пусто = из .install_info)" "${XRAY_PUBLIC_KEY:-}" XRAY_PUBLIC_KEY
+ask_with_default "Введите XRAY_PORT (пусто = из .install_info)" "${XRAY_PORT:-}" XRAY_PORT
+ask_with_default "Введите XRAY_SERVER_NAME / SNI (пусто = из .install_info)" "${XRAY_SERVER_NAME:-}" XRAY_SERVER_NAME
+ask_with_default "Введите XRAY_SHORT_ID (пусто = из .install_info)" "${XRAY_SHORT_ID:-}" XRAY_SHORT_ID
 
 # Записываем значения в .env
 info "Запись конфигурации в .env файл..."
@@ -151,13 +170,19 @@ BOT_TOKEN=$BOT_TOKEN
 # ID администраторов (через запятую)
 ADMIN_IDS=$ADMIN_IDS
 
-# Путь к директории с конфигурацией WireGuard
+# Путь к директории с конфигурацией WireGuard (Liberty)
 VPN_CONFIG_DIR=$VPN_CONFIG_DIR
 
-# Путь к директории с docker-compose
+# Путь к директории с docker-compose (Liberty)
 DOCKER_COMPOSE_DIR=$DOCKER_COMPOSE_DIR
 
-# Начальный IP адрес для клиентов (последний октет, обычно 2, так как 1 занят сервером)
+# Путь к SQLite БД клиентов (пусто = clients.db в директории бота)
+DB_PATH=$DB_PATH
+
+# Префикс имён клиентов (пусто = без префикса)
+CLIENT_NAME_PREFIX=$CLIENT_NAME_PREFIX
+
+# Начальный IP адрес для клиентов (последний октет)
 VPN_CLIENT_START_IP=$VPN_CLIENT_START_IP
 
 # DNS серверы для клиентов (через запятую)
@@ -168,6 +193,13 @@ WG_INTERFACE=$WG_INTERFACE
 
 # Имя внешнего сетевого интерфейса для получения IP адреса
 EXTERNAL_IF=$EXTERNAL_IF
+
+# Xray (VLESS Reality): пусто = бот читает из DOCKER_COMPOSE_DIR/.install_info
+XRAY_CONFIG_DIR=$XRAY_CONFIG_DIR
+XRAY_PUBLIC_KEY=$XRAY_PUBLIC_KEY
+XRAY_PORT=$XRAY_PORT
+XRAY_SERVER_NAME=$XRAY_SERVER_NAME
+XRAY_SHORT_ID=$XRAY_SHORT_ID
 EOF
 
 info ".env файл создан успешно!"
