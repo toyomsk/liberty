@@ -755,7 +755,9 @@ install_docker() {
     # Добавление GPG ключа
     log_info "Добавление GPG ключа Docker..."
     install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    # Удаляем существующий ключ, если есть, чтобы избежать интерактивного запроса
+    rm -f /etc/apt/keyrings/docker.gpg
+    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --batch --dearmor -o /etc/apt/keyrings/docker.gpg
     chmod a+r /etc/apt/keyrings/docker.gpg
 
     # Добавление репозитория
@@ -1246,7 +1248,7 @@ EOF
     volumes:
       - ./awg-config/xray-config.json:/etc/xray/config.json:ro
 
-    command: -config /etc/xray/config.json
+    command: ["/usr/bin/xray", "-config", "/etc/xray/config.json"]
 
     restart: always
 EOF
