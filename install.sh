@@ -450,12 +450,10 @@ get_config_params() {
     
     # Выбор типа VPN
     local vpn_choice=$(choose_vpn_type)
-    log_info "Получен выбор VPN: vpn_choice='$vpn_choice'"
     
     # Устанавливаем XRAY_ENABLED на основе выбора (в родительском процессе)
     # Убираем пробелы и переводы строк из выбора
     vpn_choice=$(echo "$vpn_choice" | tr -d '[:space:]')
-    log_info "Очищенный выбор VPN: vpn_choice='$vpn_choice'"
     
     case "$vpn_choice" in
         1)
@@ -475,7 +473,6 @@ get_config_params() {
             XRAY_ENABLED=false
             ;;
     esac
-    log_info "XRAY_ENABLED установлен в: $XRAY_ENABLED"
     
     # Настройка WireGuard (если не выбран только Xray)
     if [ "$vpn_choice" != "2" ]; then
@@ -599,7 +596,6 @@ get_config_params() {
     fi
     log_info "  Внешний интерфейс: $EXTERNAL_IF"
     echo ""
-    log_info "XRAY_ENABLED в конце get_config_params: XRAY_ENABLED=$XRAY_ENABLED"
 }
 
 # Проверка прав доступа
@@ -879,9 +875,7 @@ EOF
     log_info "Внешний IP сервера: $EXTERNAL_IP"
     
     # Сохраняем метаданные после генерации конфига (без дополнительного шага)
-    log_info "XRAY_ENABLED перед save_install_info в generate_config: XRAY_ENABLED=$XRAY_ENABLED"
     save_install_info "true"
-    log_info "XRAY_ENABLED после save_install_info в generate_config: XRAY_ENABLED=$XRAY_ENABLED"
 }
 
 # Генерация параметров Xray
@@ -924,7 +918,7 @@ generate_xray_params() {
     # Проверяем что Docker доступен
     if command -v docker &> /dev/null && docker info &> /dev/null; then
         log_info "Используем Docker для генерации x25519 ключей..."
-        local key_output=$(docker run --rm xtls/xray-core:latest xray x25519 2>/dev/null)
+        local key_output=$(docker run --rm ghcr.io/xtls/xray-core:latest xray x25519 2>/dev/null)
         if echo "$key_output" | grep -q "Private:"; then
             XRAY_PRIVATE_KEY=$(echo "$key_output" | grep "Private:" | awk '{print $2}')
             XRAY_PUBLIC_KEY=$(echo "$key_output" | grep "Public:" | awk '{print $2}')
@@ -1241,12 +1235,10 @@ EOF
     fi
     
     # Добавляем сервис Xray если он включен
-    log_info "Проверка XRAY_ENABLED в create_docker_compose: XRAY_ENABLED='$XRAY_ENABLED'"
     if [[ "$XRAY_ENABLED" == "true" ]]; then
-        log_info "Добавление сервиса Xray в docker-compose.yml..."
         cat >> "$COMPOSE_FILE" << EOF
   xray-core:
-    image: xtls/xray-core:latest
+    image: ghcr.io/xtls/xray-core:latest
     container_name: xray-core
 
     network_mode: host
@@ -1258,9 +1250,6 @@ EOF
 
     restart: always
 EOF
-        log_success "Сервис Xray добавлен в docker-compose.yml"
-    else
-        log_info "Xray отключен, сервис не добавляется"
     fi
     
     log_success "docker-compose.yml создан"
@@ -1993,8 +1982,6 @@ main() {
 
     # Запрос параметров конфигурации перед установкой
     get_config_params
-    
-    log_info "XRAY_ENABLED сразу после get_config_params: XRAY_ENABLED=$XRAY_ENABLED"
 
     install_docker
     create_directories
@@ -2009,18 +1996,13 @@ main() {
     fi
     
     # Генерация конфигурации Xray (если включен)
-    log_info "Проверка XRAY_ENABLED перед генерацией конфигурации: XRAY_ENABLED=$XRAY_ENABLED"
     if [ "$XRAY_ENABLED" = "true" ]; then
-        log_info "Генерация конфигурации Xray..."
         generate_xray_params
         generate_xray_config
         create_xray_startup_script
 #        generate_xray_client_config
-    else
-        log_info "Xray отключен, пропускаем генерацию конфигурации"
     fi
     
-    log_info "Проверка XRAY_ENABLED перед созданием docker-compose: XRAY_ENABLED=$XRAY_ENABLED"
     create_docker_compose
     start_container
 
