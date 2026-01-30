@@ -1359,25 +1359,15 @@ check_status() {
             checks_failed=$((checks_failed + 1))
         fi
 
-        # Проверка интерфейса wg0
-        log_info "Проверка интерфейса wg0..."
-        if ip a | grep -q wg0; then
-            log_success "Интерфейс wg0 найден"
-            checks_passed=$((checks_passed + 1))
+        # Проверка интерфейса wg0 и конфигурации WG внутри контейнера (на хосте wg0 нет)
+        log_info "Проверка WireGuard в контейнере..."
+        if docker exec liberty-wg wg show wg0 &>/dev/null; then
+            log_success "WireGuard конфигурация активна (в контейнере)"
+            checks_passed=$((checks_passed + 2))
+            docker exec liberty-wg wg show wg0 2>/dev/null || true
         else
-            log_error "Интерфейс wg0 не найден"
-            checks_failed=$((checks_failed + 1))
-        fi
-
-        # Проверка конфигурации WireGuard
-        log_info "Проверка конфигурации WireGuard..."
-        if wg show &> /dev/null; then
-            log_success "WireGuard конфигурация активна"
-            checks_passed=$((checks_passed + 1))
-            wg show
-        else
-            log_error "WireGuard конфигурация не активна"
-            checks_failed=$((checks_failed + 1))
+            log_error "WireGuard конфигурация не активна в контейнере"
+            checks_failed=$((checks_failed + 2))
         fi
 
         # Проверка порта WireGuard
