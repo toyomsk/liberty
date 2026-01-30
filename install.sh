@@ -1042,18 +1042,6 @@ XRAY_SCRIPT_EOF
     log_success "Скрипт запуска Xray создан: $xray_startup_script"
 }
 
-# Заглушка client.txt для Xray (клиенты добавляются через бота)
-generate_xray_client_config() {
-    if [ "$XRAY_ENABLED" != "true" ]; then
-        return 0
-    fi
-    local client_config_file="$CONFIG_DIR/xray/client.txt"
-    echo "# Клиенты Xray добавляются через Telegram-бота" > "$client_config_file"
-    chmod 600 "$client_config_file"
-    chown root:root "$client_config_file" 2>/dev/null || true
-    log_info "Файл $client_config_file создан (заглушка)"
-}
-
 # Создание универсальных правил блокировки торрентов
 setup_torrent_blocking() {
     log_step "Настройка универсальной блокировки торрентов"
@@ -1534,9 +1522,15 @@ install_bot() {
 
     log_step "Установка Telegram-бота"
 
-    # Проверка наличия исходников бота
-    if [ ! -d "$SCRIPT_DIR/telegram-bot" ] || [ ! -f "$SCRIPT_DIR/telegram-bot/requirements.txt" ]; then
-        log_error "Директория telegram-bot не найдена рядом со скриптом или отсутствует requirements.txt"
+    # Исходники бота: рядом со скриптом или в INSTALL_DIR (репозиторий)
+    local BOT_SOURCE=""
+    if [ -d "$SCRIPT_DIR/telegram-bot" ] && [ -f "$SCRIPT_DIR/telegram-bot/requirements.txt" ]; then
+        BOT_SOURCE="$SCRIPT_DIR/telegram-bot"
+    elif [ -d "$INSTALL_DIR/telegram-bot" ] && [ -f "$INSTALL_DIR/telegram-bot/requirements.txt" ]; then
+        BOT_SOURCE="$INSTALL_DIR/telegram-bot"
+    fi
+    if [ -z "$BOT_SOURCE" ]; then
+        log_error "Директория telegram-bot не найдена (искали: $SCRIPT_DIR/telegram-bot и $INSTALL_DIR/telegram-bot) или отсутствует requirements.txt"
         return 1
     fi
 
@@ -1553,15 +1547,15 @@ install_bot() {
     # Копируем файлы бота (исключая venv, __pycache__, .env, .git)
     if command -v rsync &>/dev/null; then
         rsync -a --exclude=venv --exclude=__pycache__ --exclude=.env --exclude=.git \
-            "$SCRIPT_DIR/telegram-bot/" "$BOT_DIR/"
+            "$BOT_SOURCE/" "$BOT_DIR/"
     else
-        for item in "$SCRIPT_DIR/telegram-bot"/*; do
+        for item in "$BOT_SOURCE"/*; do
             [ -e "$item" ] || continue
             name=$(basename "$item")
             [ "$name" = "venv" ] || [ "$name" = ".env" ] || [ "$name" = ".git" ] && continue
             cp -R "$item" "$BOT_DIR/" 2>/dev/null || cp "$item" "$BOT_DIR/"
         done
-        for dir in "$SCRIPT_DIR/telegram-bot"/bot "$SCRIPT_DIR/telegram-bot"/config; do
+        for dir in "$BOT_SOURCE"/bot "$BOT_SOURCE"/config; do
             [ -d "$dir" ] && [ ! -d "$BOT_DIR/$(basename "$dir")" ] && cp -R "$dir" "$BOT_DIR/"
         done
     fi
@@ -2216,17 +2210,6 @@ change_server_ip() {
         XRAY_SERVER_NAME="$new_xray_sni"
         XRAY_DEST="${new_xray_sni}:443"
         log_success "Конфиг Xray обновлен: порт $XRAY_PORT, SNI $XRAY_SERVER_NAME"
-        # Регенерация VLESS-ссылки (нужны UUID, PUBLIC_KEY, SHORT_ID из метаданных или конфига)
-        if [ -n "$XRAY_UUID" ] && [ -n "$XRAY_PUBLIC_KEY" ] && [ -n "$XRAY_SHORT_ID" ]; then
-            EXTERNAL_IP="$new_ip"
-            local vless_url="vless://${XRAY_UUID}@${EXTERNAL_IP}:${XRAY_PORT}?security=reality&encryption=none&pbk=${XRAY_PUBLIC_KEY}&fp=chrome&type=tcp&flow=xtls-rprx-vision&sni=${XRAY_SERVER_NAME}&sid=${XRAY_SHORT_ID}#${XRAY_SERVER_NAME}"
-            local client_config_file="$CONFIG_DIR/xray/client.txt"
-            echo "$vless_url" > "$client_config_file"
-            chmod 600 "$client_config_file"
-            log_success "Клиентская ссылка обновлена: $client_config_file"
-        else
-            log_warning "Обновите VLESS-ссылку вручную в $CONFIG_DIR/xray/client.txt (новый IP: $new_ip, порт: $XRAY_PORT, SNI: $XRAY_SERVER_NAME)"
-        fi
         # Фаервол: закрыть старый порт Xray, открыть новый (если порт изменился)
         if [ -n "$old_xray_port" ] && [ "$new_xray_port" != "$old_xray_port" ]; then
             log_info "Обновление правил фаервола для Xray: старый порт $old_xray_port → новый $new_xray_port"
@@ -2422,7 +2405,6 @@ main() {
         generate_xray_params
         generate_xray_config
         create_xray_startup_script
-        generate_xray_client_config
     fi
     
     create_docker_compose
