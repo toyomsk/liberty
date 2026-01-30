@@ -203,6 +203,53 @@ validate_ssh_key() {
 get_user_params() {
     log_step "Настройка пользователя и SSH"
     
+    # Проверяем, есть ли уже созданный пользователь из предыдущей установки
+    local existing_user=""
+    
+    # Сначала проверяем, загружена ли переменная NEW_USER из метаданных
+    if [ -n "$NEW_USER" ] && id "$NEW_USER" &>/dev/null; then
+        existing_user="$NEW_USER"
+        log_info "Обнаружен существующий пользователь из предыдущей установки: $existing_user"
+        log_info "Пропускаем создание пользователя"
+        CREATE_USER=false
+        return 0
+    fi
+    
+    # Если переменная не загружена, проверяем файл метаданных напрямую
+    if [ -z "$existing_user" ] && [ -f "$INSTALL_INFO_FILE" ]; then
+        local saved_user=$(grep "^NEW_USER=" "$INSTALL_INFO_FILE" 2>/dev/null | cut -d'"' -f2)
+        if [ -n "$saved_user" ] && id "$saved_user" &>/dev/null; then
+            existing_user="$saved_user"
+            log_info "Обнаружен существующий пользователь из предыдущей установки: $existing_user"
+            log_info "Пропускаем создание пользователя"
+            CREATE_USER=false
+            NEW_USER="$existing_user"
+            return 0
+        fi
+    fi
+    
+    # Проверяем наличие пользователей с sudo настройками (которые могли быть созданы скриптом)
+    # Ищем пользователей с файлами в /etc/sudoers.d/ и SSH ключами
+    if [ -z "$existing_user" ] && [ -d "/etc/sudoers.d" ]; then
+        for sudo_file in /etc/sudoers.d/*; do
+            if [ -f "$sudo_file" ] && grep -q "NOPASSWD: ALL" "$sudo_file" 2>/dev/null; then
+                local potential_user=$(basename "$sudo_file")
+                # Проверяем что это не системный пользователь и есть SSH директория
+                if id "$potential_user" &>/dev/null && \
+                   [ "$potential_user" != "root" ] && \
+                   [ -d "/home/$potential_user/.ssh" ] && \
+                   [ -f "/home/$potential_user/.ssh/authorized_keys" ]; then
+                    existing_user="$potential_user"
+                    log_info "Обнаружен существующий пользователь с SSH доступом: $existing_user"
+                    log_info "Пропускаем создание пользователя"
+                    CREATE_USER=false
+                    NEW_USER="$existing_user"
+                    return 0
+                fi
+            fi
+        done
+    fi
+    
     echo ""
     log_info "Вы можете создать нового пользователя и настроить SSH безопасность"
     echo ""
@@ -372,13 +419,13 @@ calculate_server_ip() {
 
 # Выбор типа VPN
 choose_vpn_type() {
-    echo ""
+    echo "" >&2
     log_info "Выберите тип VPN для установки:"
-    echo ""
-    echo "  1) Только WireGuard"
-    echo "  2) Только Xray-core (VLESS + XTLS-Reality + Vision)"
-    echo "  3) Оба (WireGuard + Xray-core)"
-    echo ""
+    echo "" >&2
+    echo "  1) Только WireGuard" >&2
+    echo "  2) Только Xray-core (VLESS + XTLS-Reality + Vision)" >&2
+    echo "  3) Оба (WireGuard + Xray-core)" >&2
+    echo "" >&2
     
     local vpn_choice=""
     while [[ ! "$vpn_choice" =~ ^[1-3]$ ]]; do
@@ -1358,7 +1405,7 @@ save_install_info() {
     fi
     
     cat > "$INSTALL_INFO_FILE" << EOF
-# Метаданные установки amnezia-wg
+# Метаданные установки VPN сервера
 # Создано: $(date)
 
 EXTERNAL_IP="$EXTERNAL_IP"
@@ -1880,7 +1927,7 @@ print_summary() {
 main() {
     echo ""
     echo "=========================================="
-    echo "  Установка amnezia-wg в Docker"
+    echo "  Установка VPN сервера"
     echo "=========================================="
     echo ""
 
@@ -1895,6 +1942,11 @@ main() {
     
     check_os
     check_utils
+    
+    # Пытаемся загрузить метаданные, если файл существует (для проверки существующего пользователя)
+    if [ -f "$INSTALL_INFO_FILE" ]; then
+        load_install_info 2>/dev/null || true
+    fi
     
     # Запрос параметров пользователя и SSH (если нужно)
     get_user_params
