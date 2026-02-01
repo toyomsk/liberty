@@ -255,18 +255,20 @@ def get_server_status(docker_compose_dir: str, vpn_config_dir: str) -> str:
         except Exception as e:
             logger.error(f"Ошибка проверки статуса Docker: {e}")
 
-        # Статус Xray
-        xray_status = "Не запущен"
+        # Статус Xray (таблица как у WG)
+        xray_docker_status = "Контейнер не запущен"
         try:
             result = subprocess.run(
-                ['docker', 'ps', '--filter', 'name=xray-core', '--format', '{{.Names}}'],
+                ['docker', 'ps', '--filter', 'name=xray-core', '--format', 'table {{.Names}}\t{{.Status}}'],
                 capture_output=True,
                 text=True,
                 cwd=docker_compose_dir,
                 timeout=5
             )
-            if result.returncode == 0 and result.stdout.strip() and "xray-core" in result.stdout:
-                xray_status = "Запущен"
+            if result.returncode == 0 and result.stdout.strip():
+                out = result.stdout.strip()
+                if "xray-core" in out:
+                    xray_docker_status = out
         except Exception as e:
             logger.error("Ошибка проверки статуса Xray: %s", e)
         
@@ -305,7 +307,6 @@ def get_server_status(docker_compose_dir: str, vpn_config_dir: str) -> str:
         
         escaped_wg_info = escape_markdown_v2(wg_info)
         escaped_external_ip = escape_markdown_v2(external_ip)
-        escaped_xray_status = escape_markdown_v2(xray_status)
         status = f"""🖥 *Статус сервера:*
 
 📦 *Docker \\(WG\\):*
@@ -316,8 +317,10 @@ def get_server_status(docker_compose_dir: str, vpn_config_dir: str) -> str:
 🔐 *WireGuard:*
 {escaped_wg_info}
 
-📡 *Xray \\(VLESS\\):*
-{escaped_xray_status}
+📡 *Docker \\(Xray\\):*
+```
+{xray_docker_status}
+```
 
 🌐 *Внешний IP:* `{escaped_external_ip}`
 """
