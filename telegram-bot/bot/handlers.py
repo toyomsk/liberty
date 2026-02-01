@@ -313,7 +313,7 @@ async def list_clients_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     result = f"👥 *Список клиентов* \\(всего: {escaped_total}\\)\n\n"
     for i, (cid, internal_name) in enumerate(rows, 1):
         display = _display_name(internal_name)
-        result += f"*{escape_markdown_v2(str(i))}\\.* `{escape_markdown_v2(cid)}` \\— *{escape_markdown_v2(display)}*\n"
+        result += f"*{escape_markdown_v2(str(i))}\\.* `{escape_markdown_v2(cid)}` — *{escape_markdown_v2(display)}*\n"
         if i < total:
             result += "\n"
 
