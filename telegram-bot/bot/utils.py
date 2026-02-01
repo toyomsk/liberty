@@ -295,11 +295,13 @@ def get_server_status(docker_compose_dir: str, vpn_config_dir: str) -> str:
         
         escaped_wg_info = escape_markdown_v2(wg_info)
         escaped_external_ip = escape_markdown_v2(external_ip)
+        escaped_docker_status = escape_markdown_v2(docker_status)
+        escaped_xray_status = escape_markdown_v2(xray_docker_status)
         status = f"""🖥 *Статус сервера:*
 
 📦 *Docker \\(WG\\):*
 ```
-{docker_status}
+{escaped_docker_status}
 ```
 
 🔐 *WireGuard:*
@@ -307,7 +309,7 @@ def get_server_status(docker_compose_dir: str, vpn_config_dir: str) -> str:
 
 📡 *Docker \\(Xray\\):*
 ```
-{xray_docker_status}
+{escaped_xray_status}
 ```
 
 🌐 *Внешний IP:* `{escaped_external_ip}`
@@ -316,7 +318,7 @@ def get_server_status(docker_compose_dir: str, vpn_config_dir: str) -> str:
         
     except Exception as e:
         logger.error(f"Ошибка при получении статуса: {e}")
-        return f"❌ Ошибка при получении статуса: {e}"
+        return escape_markdown_v2(f"❌ Ошибка при получении статуса: {e}")
 
 def _get_container_name() -> Optional[str]:
     """Получить имя контейнера WG (liberty-wg)."""
