@@ -106,10 +106,10 @@ def create_client(client_id: str, remark: Optional[str] = None) -> Tuple[bool, s
     except Exception as e:
         return False, f"Ошибка записи hysteria.yaml: {e}"
     _reload_hysteria()
-    # hysteria2://user:password@host:port/?params#fragment
+    # hysteria2://user:password@host:port/?params#fragment (порт всегда явно — клиенты не всегда подставляют 443)
     server = HYSTERIA_SERVER or get_external_ip()
     port = HYSTERIA_PORT or "443"
-    host_port = f"{server}:{port}" if port != "443" else server
+    host_port = f"{server}:{port}"
     auth_enc = quote(f"{client_id}:{password}", safe="")
     link = f"hysteria2://{auth_enc}@{host_port}/"
     params = []
@@ -160,7 +160,7 @@ def get_client_config(client_id: str, remark: Optional[str] = None) -> Optional[
         return link_or_err if ok else None
     server = HYSTERIA_SERVER or get_external_ip()
     port = HYSTERIA_PORT or "443"
-    host_port = f"{server}:{port}" if port != "443" else server
+    host_port = f"{server}:{port}"
     auth_enc = quote(f"{client_id}:{password}", safe="")
     link = f"hysteria2://{auth_enc}@{host_port}/"
     params = []
