@@ -438,7 +438,7 @@ choose_protocols() {
     read -r answer < /dev/tty
     if [[ ! "$answer" =~ ^[nN] ]]; then
         want_wg=1
-        echo "  ${GREEN}✓${NC} WireGuard" >&2
+        echo -e "  ${GREEN}✓${NC} WireGuard" >&2
     else
         echo "  — WireGuard (пропуск)" >&2
     fi
@@ -447,7 +447,7 @@ choose_protocols() {
     read -r answer < /dev/tty
     if [[ "$answer" =~ ^[yY] ]]; then
         want_xray=1
-        echo "  ${GREEN}✓${NC} Xray-core" >&2
+        echo -e "  ${GREEN}✓${NC} Xray-core" >&2
     else
         echo "  — Xray-core (пропуск)" >&2
     fi
@@ -456,7 +456,7 @@ choose_protocols() {
     read -r answer < /dev/tty
     if [[ "$answer" =~ ^[yY] ]]; then
         want_hysteria=1
-        echo "  ${GREEN}✓${NC} Hysteria2" >&2
+        echo -e "  ${GREEN}✓${NC} Hysteria2" >&2
     else
         echo "  — Hysteria2 (пропуск)" >&2
     fi
@@ -1951,9 +1951,9 @@ add_protocol_to_existing() {
     [ -f "$INSTALL_DIR/config/hysteria/hysteria.yaml" ] && grep -q "hysteria:" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null && has_hysteria=1
     echo ""
     echo "  Уже установлено:"
-    [ "$has_wg" -eq 1 ] && echo "    ${GREEN}✓${NC} WireGuard" || echo "    — WireGuard"
-    [ "$has_xray" -eq 1 ] && echo "    ${GREEN}✓${NC} Xray-core" || echo "    — Xray-core"
-    [ "$has_hysteria" -eq 1 ] && echo "    ${GREEN}✓${NC} Hysteria2" || echo "    — Hysteria2"
+    [ "$has_wg" -eq 1 ] && echo -e "    ${GREEN}✓${NC} WireGuard" || echo "    — WireGuard"
+    [ "$has_xray" -eq 1 ] && echo -e "    ${GREEN}✓${NC} Xray-core" || echo "    — Xray-core"
+    [ "$has_hysteria" -eq 1 ] && echo -e "    ${GREEN}✓${NC} Hysteria2" || echo "    — Hysteria2"
     echo ""
     if [ "$has_wg" -eq 1 ] && [ "$has_xray" -eq 1 ] && [ "$has_hysteria" -eq 1 ]; then
         log_info "Все протоколы уже установлены. Добавлять нечего."
