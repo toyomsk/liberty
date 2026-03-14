@@ -16,6 +16,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 INITIAL_CWD="${INITIAL_CWD:-$(pwd)}"
 CONFIG_DIR="$INSTALL_DIR/config"
 COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
+# Порт локальной веб-заглушки для Hysteria2 masquerade (без выхода в интернет)
+MASQUERADE_PORT="${MASQUERADE_PORT:-18080}"
 WG_CONFIG="$CONFIG_DIR/wg/wg0.conf"
 INSTALL_INFO_FILE="$INSTALL_DIR/.install_info"
 
@@ -610,9 +612,7 @@ EOF
             read -r HYSTERIA_ACME_EMAIL < /dev/tty
             HYSTERIA_ACME_EMAIL="${HYSTERIA_ACME_EMAIL:-}"
         fi
-        echo -ne "${BLUE}[?]${NC} URL веб-заглушки для masquerade (Enter — news.ycombinator.com): " >&2
-        read -r HYSTERIA_MASQUERADE_URL < /dev/tty
-        HYSTERIA_MASQUERADE_URL="${HYSTERIA_MASQUERADE_URL:-https://news.ycombinator.com/}"
+        log_info "Masquerade: локальная заглушка на порту $MASQUERADE_PORT (без выхода в интернет)"
     fi
 
     echo ""
@@ -1077,9 +1077,35 @@ setup_hysteria_config() {
     local hysteria_yaml="$hysteria_config_dir/hysteria.yaml"
     [ -z "$HYSTERIA_SERVER" ] && HYSTERIA_SERVER="${EXTERNAL_IP:-}"
     [ -z "$HYSTERIA_SERVER" ] && HYSTERIA_SERVER="localhost"
-    HYSTERIA_MASQUERADE_URL="${HYSTERIA_MASQUERADE_URL:-https://news.ycombinator.com/}"
+    HYSTERIA_MASQUERADE_URL="http://127.0.0.1:${MASQUERADE_PORT}/"
     HYSTERIA_USE_ACME="${HYSTERIA_USE_ACME:-false}"
     mkdir -p "$hysteria_config_dir"
+    # Локальная веб-заглушка для masquerade (чтобы не ходить на внешний сайт)
+    local masquerade_dir="$CONFIG_DIR/masquerade"
+    mkdir -p "$masquerade_dir/html"
+    if [ ! -f "$masquerade_dir/nginx.conf" ]; then
+        cat > "$masquerade_dir/nginx.conf" << NGX
+events { worker_connections 32; }
+http {
+    server {
+        listen ${MASQUERADE_PORT};
+        server_name _;
+        root /usr/share/nginx/html;
+        index index.html;
+        location / { try_files \$uri \$uri/ =404; }
+    }
+}
+NGX
+        log_info "Создан конфиг nginx для заглушки: $masquerade_dir/nginx.conf"
+    fi
+    if [ ! -f "$masquerade_dir/html/index.html" ]; then
+        cat > "$masquerade_dir/html/index.html" << 'STUB'
+<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>OK</title></head>
+<body><p>OK</p></body></html>
+STUB
+        log_info "Создана страница заглушки: $masquerade_dir/html/index.html"
+    fi
     if [ "$HYSTERIA_USE_ACME" = "true" ] && [ -n "$HYSTERIA_ACME_DOMAIN" ] && [ -n "$HYSTERIA_ACME_EMAIL" ]; then
         mkdir -p "$hysteria_config_dir/acme"
         cat > "$hysteria_yaml" << HYAML
@@ -1476,9 +1502,17 @@ EOF
 EOF
     fi
     
-    # Добавляем сервис Hysteria2 если включен
+    # Добавляем сервис Hysteria2 если включен (и локальную заглушку для masquerade)
     if [[ "$HYSTERIA_ENABLED" == "true" ]]; then
         cat >> "$COMPOSE_FILE" << EOF
+  masquerade:
+    image: nginx:alpine
+    container_name: liberty-masquerade
+    network_mode: host
+    volumes:
+      - ./config/masquerade/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./config/masquerade/html:/usr/share/nginx/html:ro
+    restart: always
   hysteria:
     image: tobyxdd/hysteria:latest
     container_name: hysteria
@@ -2037,9 +2071,27 @@ add_hysteria_to_existing() {
         echo -ne "${BLUE}[?]${NC} Email для Let's Encrypt: " >&2
         read -r hy_acme_email < /dev/tty
     fi
-    echo -ne "${BLUE}[?]${NC} URL веб-заглушки для masquerade (Enter — news.ycombinator.com): " >&2
-    read -r hy_masquerade < /dev/tty
-    hy_masquerade="${hy_masquerade:-https://news.ycombinator.com/}"
+    hy_masquerade="http://127.0.0.1:${MASQUERADE_PORT:-18080}/"
+    # Локальная заглушка для masquerade
+    local masquerade_dir="$hysteria_config_dir/../masquerade"
+    mkdir -p "$masquerade_dir/html"
+    if [ ! -f "$masquerade_dir/nginx.conf" ]; then
+        cat > "$masquerade_dir/nginx.conf" << NGX
+events { worker_connections 32; }
+http {
+    server {
+        listen ${MASQUERADE_PORT:-18080};
+        server_name _;
+        root /usr/share/nginx/html;
+        index index.html;
+        location / { try_files \$uri \$uri/ =404; }
+    }
+}
+NGX
+    fi
+    if [ ! -f "$masquerade_dir/html/index.html" ]; then
+        printf '%s\n' '<!DOCTYPE html><html><head><meta charset="utf-8"><title>OK</title></head><body><p>OK</p></body></html>' > "$masquerade_dir/html/index.html"
+    fi
     mkdir -p "$hysteria_config_dir"
     if [ "$hy_use_acme" = true ] && [ -n "$hy_acme_domain" ] && [ -n "$hy_acme_email" ]; then
         mkdir -p "$hysteria_config_dir/acme"
@@ -2096,6 +2148,22 @@ HYAML
     if [ ! -f "$compose_file" ]; then
         log_error "Файл docker-compose.yml не найден в $INSTALL_DIR"
         return 1
+    fi
+    if grep -q "container_name: liberty-masquerade" "$compose_file" 2>/dev/null; then
+        log_info "Сервис masquerade уже есть в docker-compose.yml"
+    else
+        cat >> "$compose_file" << 'MASQCOMPOSE'
+
+  masquerade:
+    image: nginx:alpine
+    container_name: liberty-masquerade
+    network_mode: host
+    volumes:
+      - ./config/masquerade/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./config/masquerade/html:/usr/share/nginx/html:ro
+    restart: always
+MASQCOMPOSE
+        log_success "Сервис masquerade (заглушка) добавлен в docker-compose.yml"
     fi
     if grep -q "container_name: hysteria" "$compose_file" 2>/dev/null; then
         log_info "Сервис hysteria уже есть в docker-compose.yml"
