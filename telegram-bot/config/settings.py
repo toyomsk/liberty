@@ -236,12 +236,13 @@ XRAY_ENABLED = bool(
     and XRAY_SHORT_ID
 )
 
-# Hysteria2: путь и метаданные из .install_info
+# Hysteria2: путь и метаданные из .install_info (при отсутствии — порт из hysteria.yaml, server — внешний IP в рантайме)
 HYSTERIA_CONFIG_DIR = os.path.join(DOCKER_COMPOSE_DIR, "config", "hysteria")
+HYSTERIA_YAML_PATH = os.path.join(HYSTERIA_CONFIG_DIR, "hysteria.yaml")
 
 
 def _load_hysteria_metadata() -> dict:
-    """Hysteria2-метаданные из .install_info (при отсутствии — из env)."""
+    """Hysteria2-метаданные из .install_info (при отсутствии — из env, порт из yaml)."""
     result = {}
     install_info_path = os.path.join(DOCKER_COMPOSE_DIR, ".install_info")
     if os.path.exists(install_info_path):
@@ -264,6 +265,17 @@ def _load_hysteria_metadata() -> dict:
     result.setdefault("port", os.getenv("HYSTERIA_PORT", ""))
     result.setdefault("server", os.getenv("HYSTERIA_SERVER", ""))
     result.setdefault("sni", os.getenv("HYSTERIA_SNI", ""))
+    # Если порта нет в .install_info — пробуем взять из hysteria.yaml (listen: :443)
+    if not result.get("port") and os.path.exists(HYSTERIA_YAML_PATH):
+        try:
+            import yaml
+            with open(HYSTERIA_YAML_PATH, "r") as f:
+                cfg = yaml.safe_load(f)
+            listen = (cfg or {}).get("listen", "")
+            if isinstance(listen, str) and listen.startswith(":"):
+                result["port"] = listen[1:].strip()
+        except Exception as e:
+            logger.debug("Не удалось прочитать порт из hysteria.yaml: %s", e)
     return result
 
 
@@ -271,10 +283,9 @@ _HYSTERIA_META = _load_hysteria_metadata()
 HYSTERIA_PORT = _HYSTERIA_META.get("port") or None
 HYSTERIA_SERVER = _HYSTERIA_META.get("server") or None
 HYSTERIA_SNI = _HYSTERIA_META.get("sni") or None
+# Включён, если есть конфиг и порт (server может быть None — подставится get_external_ip() в менеджере)
 HYSTERIA_ENABLED = bool(
-    os.path.exists(os.path.join(HYSTERIA_CONFIG_DIR, "hysteria.yaml"))
-    and HYSTERIA_PORT
-    and HYSTERIA_SERVER
+    os.path.exists(HYSTERIA_YAML_PATH) and HYSTERIA_PORT
 )
 
 

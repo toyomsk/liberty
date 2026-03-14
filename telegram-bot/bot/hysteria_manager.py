@@ -87,8 +87,8 @@ def create_client(client_id: str, remark: Optional[str] = None) -> Tuple[bool, s
     Add Hysteria2 userpass entry (user=client_id, password=random).
     Returns (success, hysteria2_uri_or_error).
     """
-    if not all([HYSTERIA_PORT, HYSTERIA_SERVER]):
-        return False, "Hysteria2 не настроен: нет порта или server в .install_info"
+    if not HYSTERIA_PORT:
+        return False, "Hysteria2 не настроен: нет порта (добавьте HYSTERIA_PORT в .install_info или в hysteria.yaml listen)"
     path = _config_path()
     if not os.path.exists(path):
         return False, "Hysteria2 не настроен: hysteria.yaml не найден"
@@ -144,7 +144,7 @@ def delete_client(client_id: str) -> Tuple[bool, str]:
 
 def get_client_config(client_id: str, remark: Optional[str] = None) -> Optional[str]:
     """Return hysteria2:// URI for client_id or None. Если клиента ещё нет в Hysteria (добавили протокол позже) — добавляем на лету и возвращаем ссылку."""
-    if not all([HYSTERIA_PORT, HYSTERIA_SERVER]):
+    if not HYSTERIA_PORT:
         return None
     path = _config_path()
     if not os.path.exists(path):

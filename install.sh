@@ -1091,7 +1091,8 @@ acme:
   dir: /etc/hysteria/acme
 auth:
   type: userpass
-  userpass: {}
+  userpass:
+    _placeholder: "not_used"
 masquerade:
   type: proxy
   proxy:
@@ -1119,7 +1120,8 @@ tls:
   key: /etc/hysteria/key.pem
 auth:
   type: userpass
-  userpass: {}
+  userpass:
+    _placeholder: "not_used"
 masquerade:
   type: proxy
   proxy:
@@ -2050,7 +2052,8 @@ acme:
   dir: /etc/hysteria/acme
 auth:
   type: userpass
-  userpass: {}
+  userpass:
+    _placeholder: "not_used"
 masquerade:
   type: proxy
   proxy:
@@ -2078,7 +2081,8 @@ tls:
   key: /etc/hysteria/key.pem
 auth:
   type: userpass
-  userpass: {}
+  userpass:
+    _placeholder: "not_used"
 masquerade:
   type: proxy
   proxy:
