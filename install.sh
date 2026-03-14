@@ -1482,7 +1482,7 @@ EOF
     container_name: hysteria
     network_mode: host
     volumes:
-      - ./config/hysteria:/etc/hysteria:ro
+      - ./config/hysteria:/etc/hysteria
     command: ["server", "-c", "/etc/hysteria/hysteria.yaml"]
     restart: always
 EOF
@@ -2103,7 +2103,7 @@ HYAML
     container_name: hysteria
     network_mode: host
     volumes:
-      - ./config/hysteria:/etc/hysteria:ro
+      - ./config/hysteria:/etc/hysteria
     command: ["server", "-c", "/etc/hysteria/hysteria.yaml"]
     restart: always
 HYCOMPOSE
