@@ -2117,6 +2117,23 @@ HYCOMPOSE
     HYSTERIA_SNI="$hy_sni"
     open_firewall_hysteria_port
     save_install_info true
+    # Обновить зависимости бота (PyYAML для hysteria_manager), если бот уже установлен
+    local bot_dir="$INSTALL_DIR/telegram-bot"
+    if [ -d "$bot_dir" ] && [ -f "$bot_dir/requirements.txt" ]; then
+        log_info "Обновление зависимостей Telegram-бота (нужен PyYAML для Hysteria2)..."
+        if [ -f "$bot_dir/venv/bin/pip" ]; then
+            if "$bot_dir/venv/bin/pip" install -r "$bot_dir/requirements.txt" -q 2>/dev/null; then
+                log_success "Зависимости бота обновлены"
+            else
+                log_warning "Не удалось обновить зависимости бота. Выполните вручную: cd $bot_dir && venv/bin/pip install -r requirements.txt"
+            fi
+        else
+            log_warning "Виртуальное окружение бота не найдено. Установите зависимости вручную или переустановите бота (п. 5 меню)."
+        fi
+        if systemctl is-active --quiet vpn-bot.service 2>/dev/null; then
+            systemctl restart vpn-bot.service 2>/dev/null && log_success "Бот перезапущен (vpn-bot.service)" || log_info "Перезапустите бота вручную: systemctl restart vpn-bot.service"
+        fi
+    fi
     log_success "Hysteria2 добавлен. Порт: $HYSTERIA_PORT (UDP), сервер для ссылок: $HYSTERIA_SERVER"
     log_info "Клиенты добавляются через Telegram-бота; при создании клиента будет выдаваться ссылка hysteria2://..."
 }
