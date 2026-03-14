@@ -23,6 +23,7 @@ from config.settings import (
     DB_PATH,
     CLIENT_NAME_PREFIX,
     XRAY_ENABLED,
+    HYSTERIA_ENABLED,
     AMNEZIA_JC,
     AMNEZIA_JMIN,
     AMNEZIA_JMAX,
@@ -51,7 +52,7 @@ from bot.utils import (
     restart_vpn,
     escape_markdown_v2,
 )
-from bot import xray_manager
+from bot import xray_manager, hysteria_manager
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,14 @@ async def _do_add_client(update: Update, context: ContextTypes.DEFAULT_TYPE, dis
         else:
             logger.warning("Xray create_client: %s", vless_or_err)
 
+    hysteria_link = None
+    if HYSTERIA_ENABLED:
+        ok, hy_or_err = hysteria_manager.create_client(client_id, remark=internal_name)
+        if ok:
+            hysteria_link = hy_or_err
+        else:
+            logger.warning("Hysteria create_client: %s", hy_or_err)
+
     restart_success, restart_msg = restart_vpn(DOCKER_COMPOSE_DIR, AWG_CONFIG_DIR)
 
     status_msg = "✅ Клиент создан успешно\\!\n"
@@ -198,6 +207,18 @@ async def _do_add_client(update: Update, context: ContextTypes.DEFAULT_TYPE, dis
                 await update.message.reply_photo(
                     photo=vless_qr,
                     caption=f"📱 QR\\-код VLESS для `{escape_markdown_v2(internal_name)}`",
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+        if hysteria_link:
+            await update.message.reply_text(
+                f"🔗 *Hysteria2:* `{escape_markdown_v2(internal_name)}`\n`{escape_markdown_v2(hysteria_link)}`",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            hy_qr = generate_qr_code(hysteria_link)
+            if hy_qr:
+                await update.message.reply_photo(
+                    photo=hy_qr,
+                    caption=f"📱 QR\\-код Hysteria2 для `{escape_markdown_v2(internal_name)}`",
                     parse_mode=ParseMode.MARKDOWN_V2,
                 )
     except Exception as e:
@@ -276,6 +297,20 @@ async def _do_get_config(update: Update, context: ContextTypes.DEFAULT_TYPE, arg
                     await update.message.reply_photo(
                         photo=vless_qr,
                         caption=f"📱 QR\\-код VLESS для `{escape_markdown_v2(name)}`",
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
+        if HYSTERIA_ENABLED and client_id:
+            hy_link = hysteria_manager.get_client_config(client_id, remark=name)
+            if hy_link:
+                await update.message.reply_text(
+                    f"🔗 *Hysteria2:* `{escape_markdown_v2(name)}`\n`{escape_markdown_v2(hy_link)}`",
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+                hy_qr = generate_qr_code(hy_link)
+                if hy_qr:
+                    await update.message.reply_photo(
+                        photo=hy_qr,
+                        caption=f"📱 QR\\-код Hysteria2 для `{escape_markdown_v2(name)}`",
                         parse_mode=ParseMode.MARKDOWN_V2,
                     )
     except Exception as e:
@@ -431,6 +466,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         awg_delete_client(name, AWG_CONFIG_DIR, DOCKER_COMPOSE_DIR)
         if XRAY_ENABLED:
             xray_manager.delete_client(client_id)
+        if HYSTERIA_ENABLED:
+            hysteria_manager.delete_client(client_id)
         db_delete_client(client_id, DB_PATH)
         restart_success, restart_msg = restart_vpn(DOCKER_COMPOSE_DIR, AWG_CONFIG_DIR)
 

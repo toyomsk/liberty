@@ -40,6 +40,8 @@ PSK=""
 
 # Переменные для Xray-core (VLESS + XTLS-Reality + Vision)
 XRAY_ENABLED=false
+# Hysteria2 (QUIC, опционально при установке с нуля или добавляется позже)
+HYSTERIA_ENABLED=false
 XRAY_PORT=""
 XRAY_UUID=""
 XRAY_SERVER_NAME=""
@@ -423,27 +425,49 @@ calculate_server_ip() {
     echo "$server_ip/32"
 }
 
-# Выбор типа VPN
-choose_vpn_type() {
+# Поочерёдный выбор протоколов (Y/n для каждого)
+choose_protocols() {
     echo "" >&2
-    echo -e "${BLUE}[INFO]${NC} Выберите тип VPN для установки:" >&2
-    echo "" >&2
-    echo "  1) Только WireGuard" >&2
-    echo "  2) Только Xray-core (VLESS + XTLS-Reality + Vision)" >&2
-    echo "  3) Оба (WireGuard + Xray-core)" >&2
+    echo -e "${BLUE}[INFO]${NC} Выберите протоколы для установки (можно несколько):" >&2
     echo "" >&2
     
-    local vpn_choice=""
-    while [[ ! "$vpn_choice" =~ ^[1-3]$ ]]; do
-        echo -ne "${BLUE}[?]${NC} Ваш выбор (1-3) [по умолчанию: 1]: " >&2
-        read vpn_choice < /dev/tty
-        if [ -z "$vpn_choice" ]; then
-            vpn_choice="1"
-        fi
-    done
+    local want_wg=0 want_xray=0 want_hysteria=0
+    local answer=""
     
-    # Выводим только число в stdout, все остальное в stderr
-    echo "$vpn_choice"
+    echo -ne "  ${GREEN}[1/3]${NC} Установить WireGuard? (Y/n): " >&2
+    read -r answer < /dev/tty
+    if [[ ! "$answer" =~ ^[nN] ]]; then
+        want_wg=1
+        echo "  ${GREEN}✓${NC} WireGuard" >&2
+    else
+        echo "  — WireGuard (пропуск)" >&2
+    fi
+    
+    echo -ne "  ${GREEN}[2/3]${NC} Установить Xray-core (VLESS + Reality)? (y/N): " >&2
+    read -r answer < /dev/tty
+    if [[ "$answer" =~ ^[yY] ]]; then
+        want_xray=1
+        echo "  ${GREEN}✓${NC} Xray-core" >&2
+    else
+        echo "  — Xray-core (пропуск)" >&2
+    fi
+    
+    echo -ne "  ${GREEN}[3/3]${NC} Установить Hysteria2 (QUIC)? (y/N): " >&2
+    read -r answer < /dev/tty
+    if [[ "$answer" =~ ^[yY] ]]; then
+        want_hysteria=1
+        echo "  ${GREEN}✓${NC} Hysteria2" >&2
+    else
+        echo "  — Hysteria2 (пропуск)" >&2
+    fi
+    
+    # Хотя бы один должен быть выбран
+    if [ "$want_wg" -eq 0 ] && [ "$want_xray" -eq 0 ] && [ "$want_hysteria" -eq 0 ]; then
+        log_warning "Ни один протокол не выбран — по умолчанию устанавливаем WireGuard"
+        want_wg=1
+    fi
+    echo "" >&2
+    echo "${want_wg} ${want_xray} ${want_hysteria}"
 }
 
 # Интерактивный запрос параметров конфигурации
@@ -454,73 +478,40 @@ get_config_params() {
     log_info "Настройка параметров конфигурации VPN"
     echo ""
     
-    # Выбор типа VPN
-    local vpn_choice=$(choose_vpn_type)
+    # Выбор протоколов (можно несколько: 1 2 3)
+    local protocol_flags=$(choose_protocols)
+    local want_wg want_xray want_hysteria
+    read -r want_wg want_xray want_hysteria << EOF
+$protocol_flags
+EOF
+    XRAY_ENABLED=false
+    HYSTERIA_ENABLED=false
+    WG_NETWORK=""
+    [ "$want_xray" -eq 1 ] && XRAY_ENABLED=true
+    [ "$want_hysteria" -eq 1 ] && HYSTERIA_ENABLED=true
     
-    # Устанавливаем XRAY_ENABLED на основе выбора (в родительском процессе)
-    # Убираем пробелы и переводы строк из выбора
-    vpn_choice=$(echo "$vpn_choice" | tr -d '[:space:]')
-    
-    case "$vpn_choice" in
-        1)
-            XRAY_ENABLED=false
-            log_info "Выбран только WireGuard"
-            ;;
-        2)
-            XRAY_ENABLED=true
-            log_info "Выбран только Xray-core"
-            ;;
-        3)
-            XRAY_ENABLED=true
-            log_info "Выбраны оба: WireGuard + Xray-core"
-            ;;
-        *)
-            log_error "Неизвестный выбор VPN: '$vpn_choice', используем по умолчанию WireGuard"
-            XRAY_ENABLED=false
-            ;;
-    esac
-    
-    # Настройка WireGuard (если не выбран только Xray)
-    if [ "$vpn_choice" != "2" ]; then
-        # Запрос сети
-        WG_NETWORK=$(prompt_input "Введите сеть WireGuard (CIDR формат, например 10.10.1.0/24)" "10.10.1.0/24" "validate_network")
-
-    # Проверка что переменная установлена правильно
-    if [[ -z "$WG_NETWORK" ]] || [[ "$WG_NETWORK" =~ \[.*\] ]]; then
-        log_error "Ошибка: не удалось получить сеть WireGuard"
+    # Интерфейс для выхода в интернет (нужен для всех протоколов)
+    local default_if=$(get_default_interface)
+    EXTERNAL_IF=$(prompt_input "Введите интерфейс для выхода в интернет" "$default_if" "validate_interface")
+    if [[ -z "$EXTERNAL_IF" ]] || [[ "$EXTERNAL_IF" =~ \[.*\] ]]; then
+        log_error "Ошибка: не удалось получить интерфейс"
         exit 1
     fi
-
-    # Вычисление IP адреса сервера
-    WG_SERVER_IP=$(calculate_server_ip "$WG_NETWORK")
-    log_info "IP адрес сервера будет: $WG_SERVER_IP"
-
-    # Запрос порта
-    WG_PORT=$(prompt_input "Введите порт для прослушивания WireGuard" "51820" "validate_port")
-
-    # Проверка что переменная установлена правильно
-    if [[ -z "$WG_PORT" ]] || [[ "$WG_PORT" =~ \[.*\] ]]; then
-        log_error "Ошибка: не удалось получить порт WireGuard"
-        exit 1
-    fi
-
-        # Определение интерфейса по умолчанию
-        local default_if=$(get_default_interface)
-
-        # Запрос интерфейса для выхода в интернет
-        EXTERNAL_IF=$(prompt_input "Введите интерфейс для выхода в интернет" "$default_if" "validate_interface")
-
-        # Проверка что переменная установлена правильно
-        if [[ -z "$EXTERNAL_IF" ]] || [[ "$EXTERNAL_IF" =~ \[.*\] ]]; then
-            log_error "Ошибка: не удалось получить интерфейс"
+    
+    # Настройка WireGuard (если выбран протокол 1)
+    if [ "$want_wg" -eq 1 ]; then
+        echo ""
+        log_info "Параметры WireGuard"
+        WG_NETWORK=$(prompt_input "Введите сеть WireGuard (CIDR, например 10.10.1.0/24)" "10.10.1.0/24" "validate_network")
+        if [[ -z "$WG_NETWORK" ]] || [[ "$WG_NETWORK" =~ \[.*\] ]]; then
+            log_error "Ошибка: не удалось получить сеть WireGuard"
             exit 1
         fi
-    else
-        # Если только Xray, все равно нужен интерфейс
-        local default_if=$(get_default_interface)
-        EXTERNAL_IF=$(prompt_input "Введите интерфейс для выхода в интернет" "$default_if" "validate_interface")
-        if [[ -z "$EXTERNAL_IF" ]] || [[ "$EXTERNAL_IF" =~ \[.*\] ]]; then
-            log_error "Ошибка: не удалось получить интерфейс"
+        WG_SERVER_IP=$(calculate_server_ip "$WG_NETWORK")
+        log_info "IP адреса сервера в VPN: $WG_SERVER_IP"
+        WG_PORT=$(prompt_input "Введите порт для прослушивания WireGuard" "51820" "validate_port")
+        if [[ -z "$WG_PORT" ]] || [[ "$WG_PORT" =~ \[.*\] ]]; then
+            log_error "Ошибка: не удалось получить порт WireGuard"
             exit 1
         fi
     fi
@@ -593,16 +584,47 @@ get_config_params() {
         echo ""
     fi
 
+    # Параметры Hysteria2 (если выбран выше)
+    if [ "$HYSTERIA_ENABLED" = "true" ]; then
+        echo ""
+        log_info "Параметры Hysteria2"
+        HYSTERIA_PORT=$(prompt_input "Порт для Hysteria2 (UDP)" "443" "validate_port")
+        [ -z "$HYSTERIA_PORT" ] && HYSTERIA_PORT="443"
+        echo -ne "${BLUE}[?]${NC} Адрес сервера для клиентских ссылок (домен или IP, Enter — подставить внешний IP позже): " >&2
+        read -r HYSTERIA_SERVER < /dev/tty
+        HYSTERIA_SERVER="${HYSTERIA_SERVER:-}"
+        echo -ne "${BLUE}[?]${NC} SNI для TLS (опционально, Enter — не задавать): " >&2
+        read -r HYSTERIA_SNI < /dev/tty
+        HYSTERIA_SNI="${HYSTERIA_SNI:-}"
+        echo ""
+        log_info "Сертификат: самоподписанный (палевно при проверке) или Let's Encrypt (нормальный CA)."
+        echo -ne "${BLUE}[?]${NC} Использовать Let's Encrypt? Нужен домен с A-записью на этот сервер. (y/N): " >&2
+        read -r hy_acme_choice < /dev/tty
+        HYSTERIA_USE_ACME=false
+        if [[ "$hy_acme_choice" =~ ^[yY] ]]; then
+            HYSTERIA_USE_ACME=true
+            echo -ne "${BLUE}[?]${NC} Домен (например hy.example.com): " >&2
+            read -r HYSTERIA_ACME_DOMAIN < /dev/tty
+            HYSTERIA_ACME_DOMAIN="${HYSTERIA_ACME_DOMAIN:-}"
+            echo -ne "${BLUE}[?]${NC} Email для Let's Encrypt: " >&2
+            read -r HYSTERIA_ACME_EMAIL < /dev/tty
+            HYSTERIA_ACME_EMAIL="${HYSTERIA_ACME_EMAIL:-}"
+        fi
+        echo -ne "${BLUE}[?]${NC} URL веб-заглушки для masquerade (Enter — news.ycombinator.com): " >&2
+        read -r HYSTERIA_MASQUERADE_URL < /dev/tty
+        HYSTERIA_MASQUERADE_URL="${HYSTERIA_MASQUERADE_URL:-https://news.ycombinator.com/}"
+    fi
+
     echo ""
     log_success "Параметры конфигурации:"
-    if [ "$XRAY_ENABLED" != "true" ] || [ "$vpn_choice" != "2" ]; then
-        log_info "  WireGuard сеть: $WG_NETWORK"
-        log_info "  WireGuard IP сервера: $WG_SERVER_IP"
-        log_info "  WireGuard порт: $WG_PORT"
+    if [ -n "$WG_NETWORK" ]; then
+        log_info "  WireGuard: сеть $WG_NETWORK, порт $WG_PORT, IP сервера $WG_SERVER_IP"
     fi
     if [ "$XRAY_ENABLED" = "true" ]; then
-        log_info "  Xray порт: $XRAY_PORT"
-        log_info "  Xray SNI: $XRAY_SERVER_NAME"
+        log_info "  Xray: порт $XRAY_PORT, SNI $XRAY_SERVER_NAME"
+    fi
+    if [ "$HYSTERIA_ENABLED" = "true" ]; then
+        log_info "  Hysteria2: порт $HYSTERIA_PORT"
     fi
     log_info "  Внешний интерфейс: $EXTERNAL_IF"
     echo ""
@@ -779,6 +801,7 @@ create_directories() {
     log_step "Создание структуры директорий"
     mkdir -p "$INSTALL_DIR"
     mkdir -p "$CONFIG_DIR/wg" "$CONFIG_DIR/xray"
+    [ "$HYSTERIA_ENABLED" = "true" ] && mkdir -p "$CONFIG_DIR/hysteria"
     log_success "Директории созданы: $INSTALL_DIR"
 }
 
@@ -1046,6 +1069,67 @@ XRAY_SCRIPT_EOF
     log_success "Скрипт запуска Xray создан: $xray_startup_script"
 }
 
+# Создание конфига Hysteria2 (при установке с нуля)
+setup_hysteria_config() {
+    [ "$HYSTERIA_ENABLED" != "true" ] && return 0
+    log_step "Настройка Hysteria2"
+    local hysteria_config_dir="$CONFIG_DIR/hysteria"
+    local hysteria_yaml="$hysteria_config_dir/hysteria.yaml"
+    [ -z "$HYSTERIA_SERVER" ] && HYSTERIA_SERVER="${EXTERNAL_IP:-}"
+    [ -z "$HYSTERIA_SERVER" ] && HYSTERIA_SERVER="localhost"
+    HYSTERIA_MASQUERADE_URL="${HYSTERIA_MASQUERADE_URL:-https://news.ycombinator.com/}"
+    HYSTERIA_USE_ACME="${HYSTERIA_USE_ACME:-false}"
+    mkdir -p "$hysteria_config_dir"
+    if [ "$HYSTERIA_USE_ACME" = "true" ] && [ -n "$HYSTERIA_ACME_DOMAIN" ] && [ -n "$HYSTERIA_ACME_EMAIL" ]; then
+        mkdir -p "$hysteria_config_dir/acme"
+        cat > "$hysteria_yaml" << HYAML
+listen: :${HYSTERIA_PORT}
+acme:
+  domains:
+    - ${HYSTERIA_ACME_DOMAIN}
+  email: ${HYSTERIA_ACME_EMAIL}
+  dir: /etc/hysteria/acme
+auth:
+  type: userpass
+  userpass: {}
+masquerade:
+  type: proxy
+  proxy:
+    url: ${HYSTERIA_MASQUERADE_URL}
+    rewriteHost: true
+HYAML
+        log_success "Конфиг Hysteria2 записан: $hysteria_yaml (ACME Let's Encrypt для ${HYSTERIA_ACME_DOMAIN})"
+    else
+        if [ ! -f "$hysteria_config_dir/cert.pem" ] || [ ! -f "$hysteria_config_dir/key.pem" ]; then
+            log_info "Генерация самоподписанного сертификата для Hysteria2..."
+            openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+                -keyout "$hysteria_config_dir/key.pem" \
+                -out "$hysteria_config_dir/cert.pem" \
+                -subj "/CN=${HYSTERIA_SERVER}" 2>/dev/null || true
+            if [ ! -f "$hysteria_config_dir/cert.pem" ]; then
+                log_error "Не удалось сгенерировать сертификат Hysteria2"
+                return 1
+            fi
+            log_success "Сертификат Hysteria2 создан (самоподписанный)"
+        fi
+        cat > "$hysteria_yaml" << HYAML
+listen: :${HYSTERIA_PORT}
+tls:
+  cert: /etc/hysteria/cert.pem
+  key: /etc/hysteria/key.pem
+auth:
+  type: userpass
+  userpass: {}
+masquerade:
+  type: proxy
+  proxy:
+    url: ${HYSTERIA_MASQUERADE_URL}
+    rewriteHost: true
+HYAML
+        log_success "Конфиг Hysteria2 записан: $hysteria_yaml (самоподписанный сертификат)"
+    fi
+}
+
 # Создание универсальных правил блокировки торрентов
 setup_torrent_blocking() {
     log_step "Настройка универсальной блокировки торрентов"
@@ -1237,6 +1321,33 @@ open_firewall_xray_port() {
     fi
 }
 
+# Открытие порта Hysteria2 в фаерволе: UDP (QUIC) + TCP (для ACME Let's Encrypt TLS-ALPN-01 на 443)
+open_firewall_hysteria_port() {
+    [ "$HYSTERIA_ENABLED" != "true" ] || [ -z "$HYSTERIA_PORT" ] && return 0
+    log_step "Открытие порта Hysteria2 $HYSTERIA_PORT (UDP + TCP для ACME) в фаерволе"
+    if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+        for proto in udp tcp; do
+            if ufw status 2>/dev/null | grep -q "${HYSTERIA_PORT}/${proto}"; then
+                log_info "Порт $HYSTERIA_PORT/$proto уже разрешён в ufw"
+            else
+                ufw allow "${HYSTERIA_PORT}/${proto}" comment "Hysteria2 ${proto}" 2>/dev/null || true
+                log_success "Порт $HYSTERIA_PORT/$proto открыт в ufw"
+            fi
+        done
+    else
+        ensure_iptables_persistent
+        for proto in udp tcp; do
+            if iptables -C INPUT -p "$proto" --dport "$HYSTERIA_PORT" -j ACCEPT 2>/dev/null; then
+                log_info "Порт $HYSTERIA_PORT/$proto уже разрешён в iptables"
+            else
+                iptables -I INPUT -p "$proto" --dport "$HYSTERIA_PORT" -j ACCEPT 2>/dev/null || true
+                log_success "Порт $HYSTERIA_PORT/$proto открыт в iptables"
+            fi
+        done
+        save_iptables_rules
+    fi
+}
+
 # Открытие порта WireGuard в фаерволе (ufw или iptables, UDP)
 open_firewall_wg_port() {
     [ -z "$WG_NETWORK" ] || [ -z "$WG_PORT" ] && return 0
@@ -1363,6 +1474,20 @@ EOF
 EOF
     fi
     
+    # Добавляем сервис Hysteria2 если включен
+    if [[ "$HYSTERIA_ENABLED" == "true" ]]; then
+        cat >> "$COMPOSE_FILE" << EOF
+  hysteria:
+    image: tobyxdd/hysteria:latest
+    container_name: hysteria
+    network_mode: host
+    volumes:
+      - ./config/hysteria:/etc/hysteria:ro
+    command: ["server", "-c", "/etc/hysteria/hysteria.yaml"]
+    restart: always
+EOF
+    fi
+    
     log_success "docker-compose.yml создан"
 }
 
@@ -1467,6 +1592,28 @@ check_status() {
         fi
     fi
 
+    # Проверка статуса контейнера Hysteria2 (если установлен)
+    if [ "$HYSTERIA_ENABLED" = "true" ]; then
+        log_info "Проверка статуса контейнера Hysteria2..."
+        if docker ps | grep -q hysteria; then
+            log_success "Контейнер hysteria запущен"
+            checks_passed=$((checks_passed + 1))
+        else
+            log_error "Контейнер hysteria не найден в списке запущенных"
+            checks_failed=$((checks_failed + 1))
+        fi
+        if [ -n "$HYSTERIA_PORT" ]; then
+            log_info "Проверка порта Hysteria2 $HYSTERIA_PORT (UDP)..."
+            if ss -ulnp 2>/dev/null | grep -q ":$HYSTERIA_PORT "; then
+                log_success "Порт Hysteria2 $HYSTERIA_PORT прослушивается"
+                checks_passed=$((checks_passed + 1))
+            else
+                log_error "Порт Hysteria2 $HYSTERIA_PORT не прослушивается"
+                checks_failed=$((checks_failed + 1))
+            fi
+        fi
+    fi
+
     # Итоговый результат
     echo ""
     if [ $checks_failed -eq 0 ]; then
@@ -1498,7 +1645,7 @@ check_existing_installation() {
     fi
     
     # Проверка запущенных контейнеров
-    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qE "^(liberty-wg|xray-core)$"; then
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qE "^(liberty-wg|xray-core|hysteria)$"; then
         installed=true
     fi
     
@@ -1553,6 +1700,10 @@ XRAY_DEST="$XRAY_DEST"
 XRAY_XVER="$XRAY_XVER"
 XRAY_PRIVATE_KEY="$XRAY_PRIVATE_KEY"
 XRAY_PUBLIC_KEY="$XRAY_PUBLIC_KEY"
+HYSTERIA_ENABLED="${HYSTERIA_ENABLED:-false}"
+HYSTERIA_PORT="${HYSTERIA_PORT:-}"
+HYSTERIA_SERVER="${HYSTERIA_SERVER:-}"
+HYSTERIA_SNI="${HYSTERIA_SNI:-}"
 EOF
     
     chmod 600 "$INSTALL_INFO_FILE"
@@ -1618,9 +1769,9 @@ install_bot() {
 # Интерактивное меню в начале (сервер / только бот / сервер и бот / выход)
 show_start_menu() {
     echo ""
-    echo "  1) Установить сервер (AWG + Xray)"
+    echo "  1) Установить сервер (протоколы: WG / Xray / Hysteria2 — на выбор)"
     echo "  2) Установить только Telegram-бота"
-    echo "  3) Установить сервер (AWG + Xray) и Telegram-бота"
+    echo "  3) Установить сервер и Telegram-бота"
     echo "  4) Выход"
     echo ""
     local choice=""
@@ -1658,6 +1809,318 @@ show_start_menu() {
     esac
 }
 
+# Добавить Xray на существующую установку
+add_xray_to_existing() {
+    log_step "Добавление Xray на существующую установку"
+    if [ ! -f "$INSTALL_INFO_FILE" ]; then
+        log_error "Файл .install_info не найден."
+        return 1
+    fi
+    # shellcheck source=/dev/null
+    load_install_info || return 1
+    CONFIG_DIR="$INSTALL_DIR/config"
+    XRAY_CONFIG="$CONFIG_DIR/xray/config.json"
+    if [ -f "$XRAY_CONFIG" ] && grep -q "xray-core" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
+        log_info "Xray уже установлен."
+        return 0
+    fi
+    mkdir -p "$CONFIG_DIR/xray"
+    echo ""
+    log_info "Параметры Xray (VLESS + Reality)"
+    XRAY_PORT=$(prompt_input "Порт для Xray (VLESS)" "443" "validate_port")
+    [ -z "$XRAY_PORT" ] && XRAY_PORT="443"
+    local sni_options=("microsoft.com" "cloudflare.com" "google.com" "apple.com" "Ввести вручную")
+    echo ""
+    echo "  Выберите SNI для Reality:"
+    for i in 1 2 3 4 5; do
+        echo "    $i) ${sni_options[$((i-1))]}"
+    done
+    echo -ne "${BLUE}[?]${NC} Ваш выбор (1-5) [1]: " >&2
+    read -r sni_choice < /dev/tty
+    sni_choice="${sni_choice:-1}"
+    [[ ! "$sni_choice" =~ ^[1-5]$ ]] && sni_choice=1
+    if [ "$sni_choice" = "5" ]; then
+        echo -ne "${BLUE}[?]${NC} Введите SNI вручную: " >&2
+        read -r XRAY_SERVER_NAME < /dev/tty
+        [ -z "$XRAY_SERVER_NAME" ] && XRAY_SERVER_NAME="microsoft.com"
+    else
+        XRAY_SERVER_NAME="${sni_options[$((sni_choice - 1))]}"
+    fi
+    XRAY_DEST="${XRAY_SERVER_NAME}:443"
+    XRAY_ENABLED=true
+    XRAY_XVER=0
+    generate_xray_reality_keys || return 1
+    generate_xray_config
+    local compose_file="$INSTALL_DIR/docker-compose.yml"
+    if ! grep -q "container_name: xray-core" "$compose_file" 2>/dev/null; then
+        cat >> "$compose_file" << 'XRAYCOMPOSE'
+
+  xray-core:
+    image: teddysun/xray:latest
+    container_name: xray-core
+    network_mode: host
+    volumes:
+      - ./config/xray/config.json:/etc/xray/config.json:ro
+    command: ["/usr/bin/xray", "-config", "/etc/xray/config.json"]
+    restart: always
+XRAYCOMPOSE
+        log_success "Сервис xray-core добавлен в docker-compose.yml"
+    fi
+    log_info "Запуск контейнера Xray..."
+    (cd "$INSTALL_DIR" && docker compose pull -q 2>/dev/null || true && docker compose up -d)
+    open_firewall_xray_port
+    save_install_info true
+    log_success "Xray добавлен. Порт: $XRAY_PORT, SNI: $XRAY_SERVER_NAME"
+}
+
+# Добавить WireGuard на существующую установку
+add_wireguard_to_existing() {
+    log_step "Добавление WireGuard на существующую установку"
+    if [ ! -f "$INSTALL_INFO_FILE" ]; then
+        log_error "Файл .install_info не найден."
+        return 1
+    fi
+    # shellcheck source=/dev/null
+    load_install_info || return 1
+    CONFIG_DIR="$INSTALL_DIR/config"
+    WG_CONFIG="$CONFIG_DIR/wg/wg0.conf"
+    if [ -f "$WG_CONFIG" ] && grep -q "liberty-wg" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
+        log_info "WireGuard уже установлен."
+        return 0
+    fi
+    if ! command -v docker &>/dev/null || ! docker info &>/dev/null; then
+        log_error "Для WireGuard нужен Docker."
+        return 1
+    fi
+    mkdir -p "$CONFIG_DIR/wg"
+    echo ""
+    log_info "Параметры WireGuard"
+    WG_NETWORK=$(prompt_input "Сеть WireGuard (CIDR, например 10.10.1.0/24)" "10.10.1.0/24" "validate_network")
+    [ -z "$WG_NETWORK" ] && WG_NETWORK="10.10.1.0/24"
+    WG_SERVER_IP=$(calculate_server_ip "$WG_NETWORK")
+    log_info "IP сервера в VPN: $WG_SERVER_IP"
+    WG_PORT=$(prompt_input "Порт WireGuard" "51820" "validate_port")
+    [ -z "$WG_PORT" ] && WG_PORT="51820"
+    [ -z "$EXTERNAL_IF" ] && EXTERNAL_IF=$(get_default_interface)
+    generate_config || return 1
+    create_startup_script
+    local compose_file="$INSTALL_DIR/docker-compose.yml"
+    if [ ! -f "$compose_file" ]; then
+        log_error "docker-compose.yml не найден. Создайте базовую установку сначала."
+        return 1
+    fi
+    if ! grep -q "container_name: liberty-wg" "$compose_file" 2>/dev/null; then
+        cat >> "$compose_file" << 'WGCOMPOSE'
+
+  liberty-wg:
+    image: amneziavpn/amnezia-wg:latest
+    container_name: liberty-wg
+    network_mode: host
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    volumes:
+      - /lib/modules:/lib/modules:ro
+      - ./config/wg:/opt/amnezia/awg
+      - ./start-wg.sh:/start-wg.sh:ro
+    command: /start-wg.sh
+    restart: always
+WGCOMPOSE
+        log_success "Сервис liberty-wg добавлен в docker-compose.yml"
+    fi
+    log_info "Запуск контейнера WireGuard..."
+    (cd "$INSTALL_DIR" && docker compose pull -q 2>/dev/null || true && docker compose up -d)
+    open_firewall_wg_port
+    save_install_info true
+    log_success "WireGuard добавлен. Порт: $WG_PORT"
+}
+
+# Добавить протокол на существующую установку (меню: какой добавить)
+add_protocol_to_existing() {
+    log_step "Добавить протокол"
+    if [ ! -f "$INSTALL_INFO_FILE" ]; then
+        log_error "Файл .install_info не найден. Запустите скрипт из директории установки Liberty."
+        return 1
+    fi
+    # shellcheck source=/dev/null
+    load_install_info || return 1
+    local has_wg=0 has_xray=0 has_hysteria=0
+    [ -f "$INSTALL_DIR/config/wg/wg0.conf" ] && grep -q "liberty-wg" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null && has_wg=1
+    [ -f "$INSTALL_DIR/config/xray/config.json" ] && grep -q "xray-core" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null && has_xray=1
+    [ -f "$INSTALL_DIR/config/hysteria/hysteria.yaml" ] && grep -q "hysteria:" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null && has_hysteria=1
+    echo ""
+    echo "  Уже установлено:"
+    [ "$has_wg" -eq 1 ] && echo "    ${GREEN}✓${NC} WireGuard" || echo "    — WireGuard"
+    [ "$has_xray" -eq 1 ] && echo "    ${GREEN}✓${NC} Xray-core" || echo "    — Xray-core"
+    [ "$has_hysteria" -eq 1 ] && echo "    ${GREEN}✓${NC} Hysteria2" || echo "    — Hysteria2"
+    echo ""
+    if [ "$has_wg" -eq 1 ] && [ "$has_xray" -eq 1 ] && [ "$has_hysteria" -eq 1 ]; then
+        log_info "Все протоколы уже установлены. Добавлять нечего."
+        return 0
+    fi
+    log_info "Какой протокол добавить? (Y/n для каждого)"
+    echo ""
+    local add_wg=0 add_xray=0 add_hysteria=0
+    local answer=""
+    if [ "$has_wg" -eq 0 ]; then
+        echo -ne "  Добавить WireGuard? (y/N): " >&2
+        read -r answer < /dev/tty
+        [[ "$answer" =~ ^[yY] ]] && add_wg=1
+    fi
+    if [ "$has_xray" -eq 0 ]; then
+        echo -ne "  Добавить Xray-core (VLESS + Reality)? (y/N): " >&2
+        read -r answer < /dev/tty
+        [[ "$answer" =~ ^[yY] ]] && add_xray=1
+    fi
+    if [ "$has_hysteria" -eq 0 ]; then
+        echo -ne "  Добавить Hysteria2? (y/N): " >&2
+        read -r answer < /dev/tty
+        [[ "$answer" =~ ^[yY] ]] && add_hysteria=1
+    fi
+    [ "$add_wg" -eq 0 ] && [ "$add_xray" -eq 0 ] && [ "$add_hysteria" -eq 0 ] && log_info "Ничего не выбрано." && return 0
+    [ "$add_wg" -eq 1 ] && add_wireguard_to_existing
+    [ "$add_xray" -eq 1 ] && add_xray_to_existing
+    [ "$add_hysteria" -eq 1 ] && add_hysteria_to_existing
+    log_success "Готово."
+}
+
+# Добавить Hysteria2 на существующую установку
+add_hysteria_to_existing() {
+    log_step "Добавление Hysteria2 на существующую установку"
+    if [ ! -f "$INSTALL_INFO_FILE" ]; then
+        log_error "Файл .install_info не найден. Запустите скрипт из директории установки Liberty."
+        return 1
+    fi
+    # shellcheck source=/dev/null
+    load_install_info || return 1
+    local hysteria_config_dir="$INSTALL_DIR/config/hysteria"
+    local hysteria_yaml="$hysteria_config_dir/hysteria.yaml"
+    if [ -f "$hysteria_yaml" ] && [ -f "$INSTALL_DIR/docker-compose.yml" ] && grep -q "hysteria:" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
+        log_info "Hysteria2 уже добавлен (найден $hysteria_yaml и сервис в compose)."
+        log_info "Для переустановки удалите контейнер и секцию hysteria из docker-compose.yml, затем запустите этот пункт снова."
+        return 0
+    fi
+    local default_port="443"
+    local default_server="${EXTERNAL_IP:-}"
+    [ -z "$default_server" ] && default_server="$(curl -s -4 --max-time 5 2>/dev/null https://api.ipify.org || true)"
+    echo ""
+    log_info "Введите порт для Hysteria2 (QUIC/UDP). По умолчанию 443."
+    echo -ne "${BLUE}[?]${NC} Порт [${default_port}]: " >&2
+    read -r hy_port < /dev/tty
+    hy_port="${hy_port:-$default_port}"
+    if ! [[ "$hy_port" =~ ^[0-9]+$ ]] || [ "$hy_port" -lt 1 ] || [ "$hy_port" -gt 65535 ]; then
+        log_error "Неверный порт"
+        return 1
+    fi
+    log_info "Адрес сервера для клиентских ссылок (домен или IP)."
+    echo -ne "${BLUE}[?]${NC} Сервер [${default_server}]: " >&2
+    read -r hy_server < /dev/tty
+    hy_server="${hy_server:-$default_server}"
+    [ -z "$hy_server" ] && hy_server="$default_server"
+    echo -ne "${BLUE}[?]${NC} SNI для TLS (опционально, Enter — не задавать): " >&2
+    read -r hy_sni < /dev/tty
+    hy_sni="${hy_sni:-}"
+    echo ""
+    log_info "Сертификат: самоподписанный или Let's Encrypt (нормальный CA, не палевно)."
+    echo -ne "${BLUE}[?]${NC} Использовать Let's Encrypt? Нужен домен с A-записью на этот сервер. (y/N): " >&2
+    read -r hy_acme_choice < /dev/tty
+    hy_use_acme=false
+    hy_acme_domain=""
+    hy_acme_email=""
+    if [[ "$hy_acme_choice" =~ ^[yY] ]]; then
+        hy_use_acme=true
+        echo -ne "${BLUE}[?]${NC} Домен (например hy.example.com): " >&2
+        read -r hy_acme_domain < /dev/tty
+        echo -ne "${BLUE}[?]${NC} Email для Let's Encrypt: " >&2
+        read -r hy_acme_email < /dev/tty
+    fi
+    echo -ne "${BLUE}[?]${NC} URL веб-заглушки для masquerade (Enter — news.ycombinator.com): " >&2
+    read -r hy_masquerade < /dev/tty
+    hy_masquerade="${hy_masquerade:-https://news.ycombinator.com/}"
+    mkdir -p "$hysteria_config_dir"
+    if [ "$hy_use_acme" = true ] && [ -n "$hy_acme_domain" ] && [ -n "$hy_acme_email" ]; then
+        mkdir -p "$hysteria_config_dir/acme"
+        cat > "$hysteria_yaml" << HYAML
+listen: :${hy_port}
+acme:
+  domains:
+    - ${hy_acme_domain}
+  email: ${hy_acme_email}
+  dir: /etc/hysteria/acme
+auth:
+  type: userpass
+  userpass: {}
+masquerade:
+  type: proxy
+  proxy:
+    url: ${hy_masquerade}
+    rewriteHost: true
+HYAML
+        log_success "Конфиг Hysteria2 записан (ACME Let's Encrypt для $hy_acme_domain)"
+    else
+        if [ ! -f "$hysteria_config_dir/cert.pem" ] || [ ! -f "$hysteria_config_dir/key.pem" ]; then
+            log_info "Генерация самоподписанного сертификата..."
+            openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+                -keyout "$hysteria_config_dir/key.pem" \
+                -out "$hysteria_config_dir/cert.pem" \
+                -subj "/CN=${hy_server:-localhost}" 2>/dev/null || true
+            if [ ! -f "$hysteria_config_dir/cert.pem" ]; then
+                log_error "Не удалось сгенерировать сертификат"
+                return 1
+            fi
+            log_success "Сертификат создан (самоподписанный). В клиентах: insecure=1 или pinSHA256."
+        fi
+        cat > "$hysteria_yaml" << HYAML
+listen: :${hy_port}
+tls:
+  cert: /etc/hysteria/cert.pem
+  key: /etc/hysteria/key.pem
+auth:
+  type: userpass
+  userpass: {}
+masquerade:
+  type: proxy
+  proxy:
+    url: ${hy_masquerade}
+    rewriteHost: true
+HYAML
+        log_success "Конфиг Hysteria2 записан (самоподписанный сертификат)"
+    fi
+    # Добавляем сервис в docker-compose (дописываем в конец)
+    local compose_file="$INSTALL_DIR/docker-compose.yml"
+    if [ ! -f "$compose_file" ]; then
+        log_error "Файл docker-compose.yml не найден в $INSTALL_DIR"
+        return 1
+    fi
+    if grep -q "container_name: hysteria" "$compose_file" 2>/dev/null; then
+        log_info "Сервис hysteria уже есть в docker-compose.yml"
+    else
+        cat >> "$compose_file" << 'HYCOMPOSE'
+
+  hysteria:
+    image: tobyxdd/hysteria:latest
+    container_name: hysteria
+    network_mode: host
+    volumes:
+      - ./config/hysteria:/etc/hysteria:ro
+    command: ["server", "-c", "/etc/hysteria/hysteria.yaml"]
+    restart: always
+HYCOMPOSE
+        log_success "Сервис hysteria добавлен в docker-compose.yml"
+    fi
+    log_info "Запуск контейнера Hysteria2..."
+    (cd "$INSTALL_DIR" && docker compose pull -q 2>/dev/null || true && docker compose up -d)
+    HYSTERIA_ENABLED="true"
+    HYSTERIA_PORT="$hy_port"
+    HYSTERIA_SERVER="$hy_server"
+    HYSTERIA_SNI="$hy_sni"
+    open_firewall_hysteria_port
+    save_install_info true
+    log_success "Hysteria2 добавлен. Порт: $HYSTERIA_PORT (UDP), сервер для ссылок: $HYSTERIA_SERVER"
+    log_info "Клиенты добавляются через Telegram-бота; при создании клиента будет выдаваться ссылка hysteria2://..."
+}
+
 # Интерактивное меню выбора действия (при существующей установке)
 show_installation_menu() {
     echo ""
@@ -1669,14 +2132,15 @@ show_installation_menu() {
     echo ""
     echo "  1) Удаление всего установленного"
     echo "  2) Полная переустановка с нуля"
-    echo "  3) Изменение IP-адреса и порта сервера"
-    echo "  4) Установить или переустановить Telegram-бота"
-    echo "  5) Выход"
+    echo "  3) Добавить протокол (WireGuard / Xray / Hysteria2)"
+    echo "  4) Изменение IP-адреса и порта сервера"
+    echo "  5) Установить или переустановить Telegram-бота"
+    echo "  6) Выход"
     echo ""
     
     local choice=""
-    while [[ ! "$choice" =~ ^[1-5]$ ]]; do
-        echo -ne "${BLUE}[?]${NC} Ваш выбор (1-5): " >&2
+    while [[ ! "$choice" =~ ^[1-6]$ ]]; do
+        echo -ne "${BLUE}[?]${NC} Ваш выбор (1-6): " >&2
         read choice < /dev/tty
     done
     
@@ -1689,15 +2153,19 @@ show_installation_menu() {
             reinstall
             ;;
         3)
-            change_server_ip
+            add_protocol_to_existing
             exit 0
             ;;
         4)
+            change_server_ip
+            exit 0
+            ;;
+        5)
             install_bot
             log_info "Для выхода запустите скрипт снова."
             exit 0
             ;;
-        5)
+        6)
             log_info "Выход из скрипта"
             exit 0
             ;;
@@ -1716,6 +2184,7 @@ uninstall() {
         log_info "Будут удалены:"
         log_info "  - Docker контейнер liberty-wg (если установлен)"
         log_info "  - Docker контейнер xray-core (если установлен)"
+        log_info "  - Docker контейнер hysteria (если установлен)"
         log_info "  - Директория $INSTALL_DIR со всем содержимым"
         log_info "  - Все конфигурации и клиентские конфиги"
         echo ""
@@ -1736,14 +2205,18 @@ uninstall() {
     local uninstall_wg_port=""
     local uninstall_xray_port=""
     local uninstall_xray_enabled=""
+    local uninstall_hysteria_port=""
+    local uninstall_hysteria_enabled=""
     if [ -f "$INSTALL_INFO_FILE" ]; then
         # shellcheck source=/dev/null
         . "$INSTALL_INFO_FILE" 2>/dev/null || true
         uninstall_wg_port="$WG_PORT"
         uninstall_xray_port="$XRAY_PORT"
         uninstall_xray_enabled="$XRAY_ENABLED"
+        uninstall_hysteria_port="$HYSTERIA_PORT"
+        uninstall_hysteria_enabled="$HYSTERIA_ENABLED"
     fi
-    # Удаление правил фаервола (порты WG и Xray)
+    # Удаление правил фаервола (порты WG, Xray, Hysteria2)
     log_info "Удаление правил фаервола для портов Liberty..."
     if [ -n "$uninstall_wg_port" ]; then
         if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
@@ -1765,6 +2238,16 @@ uninstall() {
         fi
         log_info "Правило для Xray (порт $uninstall_xray_port) удалено"
     fi
+    if [ "$uninstall_hysteria_enabled" = "true" ] && [ -n "$uninstall_hysteria_port" ]; then
+        if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+            ufw delete allow "${uninstall_hysteria_port}/udp" 2>/dev/null || true
+            ufw delete allow "${uninstall_hysteria_port}/tcp" 2>/dev/null || true
+        else
+            iptables -D INPUT -p udp --dport "$uninstall_hysteria_port" -j ACCEPT 2>/dev/null || true
+            iptables -D INPUT -p tcp --dport "$uninstall_hysteria_port" -j ACCEPT 2>/dev/null || true
+        fi
+        log_info "Правила для Hysteria2 (порт $uninstall_hysteria_port) удалены"
+    fi
     if ! command -v ufw &>/dev/null || ! ufw status 2>/dev/null | grep -q "Status: active"; then
         save_iptables_rules
     fi
@@ -1785,6 +2268,12 @@ uninstall() {
         docker stop xray-core 2>/dev/null || true
         docker rm xray-core 2>/dev/null || true
         log_success "Контейнер xray-core удален"
+    fi
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^hysteria$"; then
+        log_info "Остановка контейнера hysteria..."
+        docker stop hysteria 2>/dev/null || true
+        docker rm hysteria 2>/dev/null || true
+        log_success "Контейнер hysteria удален"
     fi
     
     # Удаление директории установки
@@ -2225,6 +2714,7 @@ change_server_ip() {
         log_warning "Не удалось перезапустить через docker compose, пробуем напрямую..."
         docker restart liberty-wg 2>/dev/null || true
         docker restart xray-core 2>/dev/null || true
+        docker restart hysteria 2>/dev/null || true
     }
     
     sleep 3
@@ -2271,6 +2761,9 @@ print_summary() {
     if [ "$XRAY_ENABLED" = "true" ]; then
         echo "Конфигурация Xray: $XRAY_CONFIG"
     fi
+    if [ "$HYSTERIA_ENABLED" = "true" ]; then
+        echo "Конфигурация Hysteria2: $CONFIG_DIR/hysteria/hysteria.yaml"
+    fi
     echo ""
     echo "Параметры конфигурации:"
     if [ -n "$WG_NETWORK" ]; then
@@ -2281,6 +2774,10 @@ print_summary() {
     if [ "$XRAY_ENABLED" = "true" ]; then
         echo "  Xray порт: $XRAY_PORT"
         echo "  Xray SNI: $XRAY_SERVER_NAME"
+    fi
+    if [ "$HYSTERIA_ENABLED" = "true" ]; then
+        echo "  Hysteria2 порт: $HYSTERIA_PORT (UDP)"
+        echo "  Hysteria2 сервер для ссылок: $HYSTERIA_SERVER"
     fi
     echo "  Внешний интерфейс: $EXTERNAL_IF"
     echo ""
@@ -2309,6 +2806,11 @@ print_summary() {
             echo "  Public Key: $XRAY_PUBLIC_KEY"
             echo "  Short ID: $XRAY_SHORT_ID"
         fi
+    fi
+    if [ "$HYSTERIA_ENABLED" = "true" ]; then
+        echo "Hysteria2:"
+        echo "  Для просмотра логов: docker logs hysteria"
+        echo "  Порт: $HYSTERIA_PORT (UDP), сервер для ссылок: $HYSTERIA_SERVER"
     fi
     
     echo ""
@@ -2340,11 +2842,11 @@ main() {
     check_utils
     
     # Пытаемся загрузить метаданные, если файл существует (для проверки существующего пользователя)
-    # Но сбрасываем XRAY_ENABLED, так как пользователь будет выбирать заново
+    # Сбрасываем XRAY_ENABLED и HYSTERIA_ENABLED — пользователь будет выбирать заново
     if [ -f "$INSTALL_INFO_FILE" ]; then
         load_install_info 2>/dev/null || true
-        # Сбрасываем XRAY_ENABLED, чтобы пользователь мог выбрать заново
         XRAY_ENABLED=false
+        HYSTERIA_ENABLED=false
     fi
     
     # Запрос параметров пользователя и SSH (если нужно)
@@ -2367,6 +2869,7 @@ main() {
     setup_torrent_blocking
     open_firewall_wg_port
     open_firewall_xray_port
+    open_firewall_hysteria_port
 
     # Генерация конфигурации WireGuard (если нужен)
     if [ -n "$WG_NETWORK" ]; then
@@ -2380,6 +2883,9 @@ main() {
         generate_xray_config
         create_xray_startup_script
     fi
+    
+    # Конфиг Hysteria2 (если включен)
+    setup_hysteria_config
     
     create_docker_compose
     start_container

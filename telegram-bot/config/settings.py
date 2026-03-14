@@ -236,6 +236,47 @@ XRAY_ENABLED = bool(
     and XRAY_SHORT_ID
 )
 
+# Hysteria2: путь и метаданные из .install_info
+HYSTERIA_CONFIG_DIR = os.path.join(DOCKER_COMPOSE_DIR, "config", "hysteria")
+
+
+def _load_hysteria_metadata() -> dict:
+    """Hysteria2-метаданные из .install_info (при отсутствии — из env)."""
+    result = {}
+    install_info_path = os.path.join(DOCKER_COMPOSE_DIR, ".install_info")
+    if os.path.exists(install_info_path):
+        try:
+            with open(install_info_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if "=" in line and line.startswith("HYSTERIA_"):
+                        key, _, value = line.partition("=")
+                        key = key.strip()
+                        value = value.strip().strip('"').strip("'")
+                        if key == "HYSTERIA_PORT":
+                            result["port"] = value
+                        elif key == "HYSTERIA_SERVER":
+                            result["server"] = value
+                        elif key == "HYSTERIA_SNI":
+                            result["sni"] = value
+        except Exception as e:
+            logger.warning("Ошибка чтения .install_info (Hysteria): %s", e)
+    result.setdefault("port", os.getenv("HYSTERIA_PORT", ""))
+    result.setdefault("server", os.getenv("HYSTERIA_SERVER", ""))
+    result.setdefault("sni", os.getenv("HYSTERIA_SNI", ""))
+    return result
+
+
+_HYSTERIA_META = _load_hysteria_metadata()
+HYSTERIA_PORT = _HYSTERIA_META.get("port") or None
+HYSTERIA_SERVER = _HYSTERIA_META.get("server") or None
+HYSTERIA_SNI = _HYSTERIA_META.get("sni") or None
+HYSTERIA_ENABLED = bool(
+    os.path.exists(os.path.join(HYSTERIA_CONFIG_DIR, "hysteria.yaml"))
+    and HYSTERIA_PORT
+    and HYSTERIA_SERVER
+)
+
 
 def is_admin(user_id: int) -> bool:
     """Проверка, является ли пользователь администратором."""

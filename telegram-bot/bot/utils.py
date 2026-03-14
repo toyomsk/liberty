@@ -271,6 +271,23 @@ def get_server_status(docker_compose_dir: str, vpn_config_dir: str) -> str:
                     xray_docker_status = out
         except Exception as e:
             logger.error("Ошибка проверки статуса Xray: %s", e)
+
+        # Статус Hysteria2
+        hysteria_docker_status = "Контейнер не запущен"
+        try:
+            result = subprocess.run(
+                ['docker', 'ps', '--filter', 'name=hysteria', '--format', 'table {{.Names}}\t{{.Status}}'],
+                capture_output=True,
+                text=True,
+                cwd=docker_compose_dir,
+                timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                out = result.stdout.strip()
+                if "hysteria" in out:
+                    hysteria_docker_status = out
+        except Exception as e:
+            logger.error("Ошибка проверки статуса Hysteria: %s", e)
         
         # WireGuard статус (только в контейнере)
         wg_info = "WireGuard интерфейс не активен"
@@ -297,6 +314,7 @@ def get_server_status(docker_compose_dir: str, vpn_config_dir: str) -> str:
         escaped_external_ip = escape_markdown_v2(external_ip)
         escaped_docker_status = escape_markdown_v2(docker_status)
         escaped_xray_status = escape_markdown_v2(xray_docker_status)
+        escaped_hysteria_status = escape_markdown_v2(hysteria_docker_status)
         status = f"""🖥 *Статус сервера:*
 
 📦 *Docker \\(WG\\):*
@@ -310,6 +328,11 @@ def get_server_status(docker_compose_dir: str, vpn_config_dir: str) -> str:
 📡 *Docker \\(Xray\\):*
 ```
 {escaped_xray_status}
+```
+
+📡 *Docker \\(Hysteria2\\):*
+```
+{escaped_hysteria_status}
 ```
 
 🌐 *Внешний IP:* `{escaped_external_ip}`
