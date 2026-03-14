@@ -1155,6 +1155,7 @@ masquerade:
     rewriteHost: true
 HYAML
         log_success "Конфиг Hysteria2 записан: $hysteria_yaml (самоподписанный сертификат)"
+        log_info "При открытии в браузере сертификат будет «недоверенный». Для доверенного — переустановите Hysteria с Let's Encrypt (домен с A-записью на сервер)."
     fi
 }
 
@@ -2125,6 +2126,7 @@ HYAML
                 return 1
             fi
             log_success "Сертификат создан (самоподписанный). В клиентах: insecure=1 или pinSHA256."
+            log_info "В браузере сертификат будет «недоверенный». Для доверенного — настройте Let's Encrypt (домен с A-записью на этот сервер)."
         fi
         cat > "$hysteria_yaml" << HYAML
 listen: :${hy_port}
