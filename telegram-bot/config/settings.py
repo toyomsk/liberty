@@ -265,7 +265,7 @@ def _load_hysteria_metadata() -> dict:
     result.setdefault("port", os.getenv("HYSTERIA_PORT", ""))
     result.setdefault("server", os.getenv("HYSTERIA_SERVER", ""))
     result.setdefault("sni", os.getenv("HYSTERIA_SNI", ""))
-    # Если порта нет в .install_info — пробуем взять из hysteria.yaml (listen: :443)
+    # Если порта нет в .install_info — пробуем взять из hysteria.yaml (listen: :8443)
     if not result.get("port") and os.path.exists(HYSTERIA_YAML_PATH):
         try:
             import yaml

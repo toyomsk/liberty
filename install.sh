@@ -16,8 +16,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
 INITIAL_CWD="${INITIAL_CWD:-$(pwd)}"
 CONFIG_DIR="$INSTALL_DIR/config"
 COMPOSE_FILE="$INSTALL_DIR/docker-compose.yml"
-# Порт локальной веб-заглушки для Hysteria2 masquerade (без выхода в интернет)
-MASQUERADE_PORT="${MASQUERADE_PORT:-18080}"
 WG_CONFIG="$CONFIG_DIR/wg/wg0.conf"
 INSTALL_INFO_FILE="$INSTALL_DIR/.install_info"
 
@@ -590,8 +588,8 @@ EOF
     if [ "$HYSTERIA_ENABLED" = "true" ]; then
         echo ""
         log_info "Параметры Hysteria2"
-        HYSTERIA_PORT=$(prompt_input "Порт для Hysteria2 (UDP)" "443" "validate_port")
-        [ -z "$HYSTERIA_PORT" ] && HYSTERIA_PORT="443"
+        HYSTERIA_PORT=$(prompt_input "Порт для Hysteria2 (UDP)" "8443" "validate_port")
+        [ -z "$HYSTERIA_PORT" ] && HYSTERIA_PORT="8443"
         echo -ne "${BLUE}[?]${NC} Адрес сервера для клиентских ссылок (домен или IP, Enter — подставить внешний IP позже): " >&2
         read -r HYSTERIA_SERVER < /dev/tty
         HYSTERIA_SERVER="${HYSTERIA_SERVER:-}"
@@ -612,7 +610,7 @@ EOF
             read -r HYSTERIA_ACME_EMAIL < /dev/tty
             HYSTERIA_ACME_EMAIL="${HYSTERIA_ACME_EMAIL:-}"
         fi
-        log_info "Masquerade: локальная заглушка на порту $MASQUERADE_PORT (без выхода в интернет)"
+        log_info "Masquerade: локальная заглушка (файлы в config/masquerade/html)"
     fi
 
     echo ""
@@ -1077,32 +1075,22 @@ setup_hysteria_config() {
     local hysteria_yaml="$hysteria_config_dir/hysteria.yaml"
     [ -z "$HYSTERIA_SERVER" ] && HYSTERIA_SERVER="${EXTERNAL_IP:-}"
     [ -z "$HYSTERIA_SERVER" ] && HYSTERIA_SERVER="localhost"
-    HYSTERIA_MASQUERADE_URL="http://127.0.0.1:${MASQUERADE_PORT}/"
     HYSTERIA_USE_ACME="${HYSTERIA_USE_ACME:-false}"
     mkdir -p "$hysteria_config_dir"
-    # Локальная веб-заглушка для masquerade (чтобы не ходить на внешний сайт)
+    # Файлы заглушки для masquerade (type: file) — Hysteria отдаёт их напрямую
     local masquerade_dir="$CONFIG_DIR/masquerade"
     mkdir -p "$masquerade_dir/html"
-    if [ ! -f "$masquerade_dir/nginx.conf" ]; then
-        cat > "$masquerade_dir/nginx.conf" << NGX
-events { worker_connections 32; }
-http {
-    server {
-        listen ${MASQUERADE_PORT};
-        server_name _;
-        root /usr/share/nginx/html;
-        index index.html;
-        location / { try_files \$uri \$uri/ =404; }
-    }
-}
-NGX
-        log_info "Создан конфиг nginx для заглушки: $masquerade_dir/nginx.conf"
-    fi
     if [ ! -f "$masquerade_dir/html/index.html" ]; then
         cat > "$masquerade_dir/html/index.html" << 'STUB'
 <!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>OK</title></head>
-<body><p>OK</p></body></html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Reconnect</title>
+<style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:system-ui,sans-serif;background:#1a1a2e;color:#eee}
+.wrap{text-align:center}
+.spinner{width:40px;height:40px;margin:0 auto 1rem;border:3px solid #333;border-top-color:#0ea5e9;border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+h1{margin:0;font-size:1.25rem;font-weight:500;letter-spacing:.05em}
+</style></head><body><div class="wrap"><div class="spinner"></div><h1>Reconnect…</h1></div></body></html>
 STUB
         log_info "Создана страница заглушки: $masquerade_dir/html/index.html"
     fi
@@ -1120,10 +1108,10 @@ auth:
   userpass:
     _placeholder: "not_used"
 masquerade:
-  type: proxy
-  proxy:
-    url: ${HYSTERIA_MASQUERADE_URL}
-    rewriteHost: true
+  type: file
+  file:
+    dir: /etc/hysteria/masquerade
+  listenHTTPS: :${HYSTERIA_PORT}
 HYAML
         log_success "Конфиг Hysteria2 записан: $hysteria_yaml (ACME Let's Encrypt для ${HYSTERIA_ACME_DOMAIN})"
     else
@@ -1149,10 +1137,10 @@ auth:
   userpass:
     _placeholder: "not_used"
 masquerade:
-  type: proxy
-  proxy:
-    url: ${HYSTERIA_MASQUERADE_URL}
-    rewriteHost: true
+  type: file
+  file:
+    dir: /etc/hysteria/masquerade
+  listenHTTPS: :${HYSTERIA_PORT}
 HYAML
         log_success "Конфиг Hysteria2 записан: $hysteria_yaml (самоподписанный сертификат)"
         log_info "При открытии в браузере сертификат будет «недоверенный». Для доверенного — переустановите Hysteria с Let's Encrypt (домен с A-записью на сервер)."
@@ -1350,10 +1338,10 @@ open_firewall_xray_port() {
     fi
 }
 
-# Открытие порта Hysteria2 в фаерволе: UDP (QUIC) + TCP (для ACME Let's Encrypt TLS-ALPN-01 на 443)
+# Открытие порта Hysteria2 в фаерволе: UDP (QUIC) + TCP (для ACME Let's Encrypt TLS-ALPN-01)
 open_firewall_hysteria_port() {
     [ "$HYSTERIA_ENABLED" != "true" ] || [ -z "$HYSTERIA_PORT" ] && return 0
-    log_step "Открытие порта Hysteria2 $HYSTERIA_PORT (UDP + TCP для ACME) в фаерволе"
+    log_step "Открытие порта Hysteria2 $HYSTERIA_PORT (UDP + TCP) в фаерволе"
     if command -v ufw &>/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
         for proto in udp tcp; do
             if ufw status 2>/dev/null | grep -q "${HYSTERIA_PORT}/${proto}"; then
@@ -1503,28 +1491,21 @@ EOF
 EOF
     fi
     
-    # Добавляем сервис Hysteria2 если включен (и локальную заглушку для masquerade)
+    # Добавляем сервис Hysteria2 если включен
     if [[ "$HYSTERIA_ENABLED" == "true" ]]; then
         cat >> "$COMPOSE_FILE" << EOF
-  masquerade:
-    image: nginx:alpine
-    container_name: liberty-masquerade
-    network_mode: host
-    volumes:
-      - ./config/masquerade/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./config/masquerade/html:/usr/share/nginx/html:ro
-    restart: always
   hysteria:
     image: tobyxdd/hysteria:latest
     container_name: hysteria
     network_mode: host
     volumes:
       - ./config/hysteria:/etc/hysteria
+      - ./config/masquerade/html:/etc/hysteria/masquerade:ro
     command: ["server", "-c", "/etc/hysteria/hysteria.yaml"]
     restart: always
 EOF
     fi
-    
+
     log_success "docker-compose.yml создан"
 }
 
@@ -2038,11 +2019,11 @@ add_hysteria_to_existing() {
         log_info "Для переустановки удалите контейнер и секцию hysteria из docker-compose.yml, затем запустите этот пункт снова."
         return 0
     fi
-    local default_port="443"
+    local default_port="8443"
     local default_server="${EXTERNAL_IP:-}"
     [ -z "$default_server" ] && default_server="$(curl -s -4 --max-time 5 2>/dev/null https://api.ipify.org || true)"
     echo ""
-    log_info "Введите порт для Hysteria2 (QUIC/UDP). По умолчанию 443."
+    log_info "Введите порт для Hysteria2 (QUIC/UDP). По умолчанию 8443."
     echo -ne "${BLUE}[?]${NC} Порт [${default_port}]: " >&2
     read -r hy_port < /dev/tty
     hy_port="${hy_port:-$default_port}"
@@ -2072,26 +2053,21 @@ add_hysteria_to_existing() {
         echo -ne "${BLUE}[?]${NC} Email для Let's Encrypt: " >&2
         read -r hy_acme_email < /dev/tty
     fi
-    hy_masquerade="http://127.0.0.1:${MASQUERADE_PORT:-18080}/"
-    # Локальная заглушка для masquerade
+    # Файлы заглушки для masquerade (type: file)
     local masquerade_dir="$hysteria_config_dir/../masquerade"
     mkdir -p "$masquerade_dir/html"
-    if [ ! -f "$masquerade_dir/nginx.conf" ]; then
-        cat > "$masquerade_dir/nginx.conf" << NGX
-events { worker_connections 32; }
-http {
-    server {
-        listen ${MASQUERADE_PORT:-18080};
-        server_name _;
-        root /usr/share/nginx/html;
-        index index.html;
-        location / { try_files \$uri \$uri/ =404; }
-    }
-}
-NGX
-    fi
     if [ ! -f "$masquerade_dir/html/index.html" ]; then
-        printf '%s\n' '<!DOCTYPE html><html><head><meta charset="utf-8"><title>OK</title></head><body><p>OK</p></body></html>' > "$masquerade_dir/html/index.html"
+        cat > "$masquerade_dir/html/index.html" << 'STUB'
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Reconnect</title>
+<style>
+*{box-sizing:border-box}body{margin:0;min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;font-family:system-ui,sans-serif;background:#1a1a2e;color:#eee}
+.wrap{text-align:center}
+.spinner{width:40px;height:40px;margin:0 auto 1rem;border:3px solid #333;border-top-color:#0ea5e9;border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+h1{margin:0;font-size:1.25rem;font-weight:500;letter-spacing:.05em}
+</style></head><body><div class="wrap"><div class="spinner"></div><h1>Reconnect…</h1></div></body></html>
+STUB
     fi
     mkdir -p "$hysteria_config_dir"
     if [ "$hy_use_acme" = true ] && [ -n "$hy_acme_domain" ] && [ -n "$hy_acme_email" ]; then
@@ -2108,10 +2084,10 @@ auth:
   userpass:
     _placeholder: "not_used"
 masquerade:
-  type: proxy
-  proxy:
-    url: ${hy_masquerade}
-    rewriteHost: true
+  type: file
+  file:
+    dir: /etc/hysteria/masquerade
+  listenHTTPS: :${hy_port}
 HYAML
         log_success "Конфиг Hysteria2 записан (ACME Let's Encrypt для $hy_acme_domain)"
     else
@@ -2138,10 +2114,10 @@ auth:
   userpass:
     _placeholder: "not_used"
 masquerade:
-  type: proxy
-  proxy:
-    url: ${hy_masquerade}
-    rewriteHost: true
+  type: file
+  file:
+    dir: /etc/hysteria/masquerade
+  listenHTTPS: :${hy_port}
 HYAML
         log_success "Конфиг Hysteria2 записан (самоподписанный сертификат)"
     fi
@@ -2150,22 +2126,6 @@ HYAML
     if [ ! -f "$compose_file" ]; then
         log_error "Файл docker-compose.yml не найден в $INSTALL_DIR"
         return 1
-    fi
-    if grep -q "container_name: liberty-masquerade" "$compose_file" 2>/dev/null; then
-        log_info "Сервис masquerade уже есть в docker-compose.yml"
-    else
-        cat >> "$compose_file" << 'MASQCOMPOSE'
-
-  masquerade:
-    image: nginx:alpine
-    container_name: liberty-masquerade
-    network_mode: host
-    volumes:
-      - ./config/masquerade/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./config/masquerade/html:/usr/share/nginx/html:ro
-    restart: always
-MASQCOMPOSE
-        log_success "Сервис masquerade (заглушка) добавлен в docker-compose.yml"
     fi
     if grep -q "container_name: hysteria" "$compose_file" 2>/dev/null; then
         log_info "Сервис hysteria уже есть в docker-compose.yml"
@@ -2178,6 +2138,7 @@ MASQCOMPOSE
     network_mode: host
     volumes:
       - ./config/hysteria:/etc/hysteria
+      - ./config/masquerade/html:/etc/hysteria/masquerade:ro
     command: ["server", "-c", "/etc/hysteria/hysteria.yaml"]
     restart: always
 HYCOMPOSE
@@ -2958,6 +2919,7 @@ main() {
     
     # Настройка универсальной блокировки торрентов (применяется один раз для всех)
     setup_torrent_blocking
+    log_step "Настройка фаервола (открытие портов VPN)"
     open_firewall_wg_port
     open_firewall_xray_port
     open_firewall_hysteria_port
