@@ -343,22 +343,21 @@ def get_server_status(docker_compose_dir: str, vpn_config_dir: str) -> str:
 📦 *Docker \\(WG\\):*
 ```
 {escaped_docker_status}
+
+{escaped_wg_info}
 ```
 
-🔐 *WireGuard:*
-{escaped_wg_info}
-
-📡 *Docker \\(Xray\\):*
+📦 *Docker \\(Xray\\):*
 ```
 {escaped_xray_status}
 ```
 
-📡 *Docker \\(Hysteria2\\):*
+📦 *Docker \\(Hysteria2\\):*
 ```
 {escaped_hysteria_status}
 ```
 
-📡 *Docker \\(MTProxy\\):* \\(запущено: `{escaped_mtproxy_count}`\\)
+📦 *Docker \\(MTProxy\\):* \\(запущено: `{escaped_mtproxy_count}`\\)
 ```
 {escaped_mtproxy_status}
 ```
