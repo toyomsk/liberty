@@ -24,6 +24,7 @@ from config.settings import (
     CLIENT_NAME_PREFIX,
     XRAY_ENABLED,
     HYSTERIA_ENABLED,
+    MTPROXY_READY,
     AMNEZIA_JC,
     AMNEZIA_JMIN,
     AMNEZIA_JMAX,
@@ -52,7 +53,7 @@ from bot.utils import (
     restart_vpn,
     escape_markdown_v2,
 )
-from bot import xray_manager, hysteria_manager
+from bot import xray_manager, hysteria_manager, mtproxy_manager
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,8 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 /restart — Перезапуск VPN-сервера
 /cancel — Выход из режима ввода
 /help — Эта справка"""
+    if MTPROXY_READY:
+        welcome_text += "\n\n<i>При создании клиента также поднимается отдельный MTProto-прокси (mtg), ссылка приходит вместе с конфигом.</i>"
 
     await update.message.reply_text(welcome_text, parse_mode=ParseMode.HTML)
 
@@ -160,6 +163,14 @@ async def _do_add_client(update: Update, context: ContextTypes.DEFAULT_TYPE, dis
         else:
             logger.warning("Hysteria create_client: %s", hy_or_err)
 
+    mtproxy_link = None
+    if MTPROXY_READY:
+        mt_ok, mt_or_err = mtproxy_manager.create_for_client(client_id)
+        if mt_ok:
+            mtproxy_link = mt_or_err
+        else:
+            logger.warning("MTProxy create_for_client: %s", mt_or_err)
+
     restart_success, restart_msg = restart_vpn(DOCKER_COMPOSE_DIR, AWG_CONFIG_DIR)
 
     status_msg = "✅ Клиент создан успешно\\!\n"
@@ -221,6 +232,23 @@ async def _do_add_client(update: Update, context: ContextTypes.DEFAULT_TYPE, dis
                     caption=f"📱 QR\\-код Hysteria2 для `{escape_markdown_v2(internal_name)}`",
                     parse_mode=ParseMode.MARKDOWN_V2,
                 )
+        if mtproxy_link:
+            await update.message.reply_text(
+                f"🔗 *MTProto \\(mtg\\):* `{escape_markdown_v2(internal_name)}`\n`{escape_markdown_v2(mtproxy_link)}`",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
+            mt_qr = generate_qr_code(mtproxy_link)
+            if mt_qr:
+                await update.message.reply_photo(
+                    photo=mt_qr,
+                    caption=f"📱 QR MTProto для `{escape_markdown_v2(internal_name)}`",
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+        elif MTPROXY_READY:
+            await update.message.reply_text(
+                "⚠️ MTProto \\(mtg\\) для этого клиента не создан — см\\. логи бота",
+                parse_mode=ParseMode.MARKDOWN_V2,
+            )
     except Exception as e:
         logger.error("Ошибка отправки конфига: %s", e)
         await update.message.reply_text(f"❌ Ошибка отправки конфига: {e}")
@@ -311,6 +339,20 @@ async def _do_get_config(update: Update, context: ContextTypes.DEFAULT_TYPE, arg
                     await update.message.reply_photo(
                         photo=hy_qr,
                         caption=f"📱 QR\\-код Hysteria2 для `{escape_markdown_v2(name)}`",
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
+        if MTPROXY_READY and client_id and mtproxy_manager.has_mtproxy_user(client_id):
+            ok_mt, mt_link = mtproxy_manager.get_link_plain(client_id)
+            if ok_mt:
+                await update.message.reply_text(
+                    f"🔗 *MTProto \\(mtg\\):* `{escape_markdown_v2(name)}`\n`{escape_markdown_v2(mt_link)}`",
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                )
+                mt_qr = generate_qr_code(mt_link)
+                if mt_qr:
+                    await update.message.reply_photo(
+                        photo=mt_qr,
+                        caption=f"📱 QR MTProto для `{escape_markdown_v2(name)}`",
                         parse_mode=ParseMode.MARKDOWN_V2,
                     )
     except Exception as e:
@@ -468,6 +510,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             xray_manager.delete_client(client_id)
         if HYSTERIA_ENABLED:
             hysteria_manager.delete_client(client_id)
+        if MTPROXY_READY:
+            mtproxy_manager.remove_for_client(client_id)
         db_delete_client(client_id, DB_PATH)
         restart_success, restart_msg = restart_vpn(DOCKER_COMPOSE_DIR, AWG_CONFIG_DIR)
 

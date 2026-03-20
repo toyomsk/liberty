@@ -42,6 +42,9 @@ PSK=""
 XRAY_ENABLED=false
 # Hysteria2 (QUIC, опционально при установке с нуля или добавляется позже)
 HYSTERIA_ENABLED=false
+# MTProto (mtg): mtproxy-admin.sh + интеграция в Telegram-бота
+MTPROXY_ENABLED=false
+MTPROXY_FAKE_DOMAIN="cloudflare.com"
 XRAY_PORT=""
 XRAY_UUID=""
 XRAY_SERVER_NAME=""
@@ -431,10 +434,10 @@ choose_protocols() {
     echo -e "${BLUE}[INFO]${NC} Выберите протоколы для установки (можно несколько):" >&2
     echo "" >&2
     
-    local want_wg=0 want_xray=0 want_hysteria=0
+    local want_wg=0 want_xray=0 want_hysteria=0 want_mtproxy=0
     local answer=""
     
-    echo -ne "  ${GREEN}[1/3]${NC} Установить WireGuard? (Y/n): " >&2
+    echo -ne "  ${GREEN}[1/4]${NC} Установить WireGuard? (Y/n): " >&2
     read -r answer < /dev/tty
     if [[ ! "$answer" =~ ^[nN] ]]; then
         want_wg=1
@@ -443,7 +446,7 @@ choose_protocols() {
         echo "  — WireGuard (пропуск)" >&2
     fi
     
-    echo -ne "  ${GREEN}[2/3]${NC} Установить Xray-core (VLESS + Reality)? (y/N): " >&2
+    echo -ne "  ${GREEN}[2/4]${NC} Установить Xray-core (VLESS + Reality)? (y/N): " >&2
     read -r answer < /dev/tty
     if [[ "$answer" =~ ^[yY] ]]; then
         want_xray=1
@@ -452,7 +455,7 @@ choose_protocols() {
         echo "  — Xray-core (пропуск)" >&2
     fi
     
-    echo -ne "  ${GREEN}[3/3]${NC} Установить Hysteria2 (QUIC)? (y/N): " >&2
+    echo -ne "  ${GREEN}[3/4]${NC} Установить Hysteria2 (QUIC)? (y/N): " >&2
     read -r answer < /dev/tty
     if [[ "$answer" =~ ^[yY] ]]; then
         want_hysteria=1
@@ -460,14 +463,23 @@ choose_protocols() {
     else
         echo "  — Hysteria2 (пропуск)" >&2
     fi
+
+    echo -ne "  ${GREEN}[4/4]${NC} Установить MTProto-прокси (mtg) для Telegram + бота? (y/N): " >&2
+    read -r answer < /dev/tty
+    if [[ "$answer" =~ ^[yY] ]]; then
+        want_mtproxy=1
+        echo -e "  ${GREEN}✓${NC} MTProto (mtg)" >&2
+    else
+        echo "  — MTProto (mtg) (пропуск)" >&2
+    fi
     
     # Хотя бы один должен быть выбран
-    if [ "$want_wg" -eq 0 ] && [ "$want_xray" -eq 0 ] && [ "$want_hysteria" -eq 0 ]; then
+    if [ "$want_wg" -eq 0 ] && [ "$want_xray" -eq 0 ] && [ "$want_hysteria" -eq 0 ] && [ "$want_mtproxy" -eq 0 ]; then
         log_warning "Ни один протокол не выбран — по умолчанию устанавливаем WireGuard"
         want_wg=1
     fi
     echo "" >&2
-    echo "${want_wg} ${want_xray} ${want_hysteria}"
+    echo "${want_wg} ${want_xray} ${want_hysteria} ${want_mtproxy}"
 }
 
 # Интерактивный запрос параметров конфигурации
@@ -480,15 +492,17 @@ get_config_params() {
     
     # Выбор протоколов (можно несколько: 1 2 3)
     local protocol_flags=$(choose_protocols)
-    local want_wg want_xray want_hysteria
-    read -r want_wg want_xray want_hysteria << EOF
+    local want_wg want_xray want_hysteria want_mtproxy
+    read -r want_wg want_xray want_hysteria want_mtproxy << EOF
 $protocol_flags
 EOF
     XRAY_ENABLED=false
     HYSTERIA_ENABLED=false
+    MTPROXY_ENABLED=false
     WG_NETWORK=""
     [ "$want_xray" -eq 1 ] && XRAY_ENABLED=true
     [ "$want_hysteria" -eq 1 ] && HYSTERIA_ENABLED=true
+    [ "$want_mtproxy" -eq 1 ] && MTPROXY_ENABLED=true
     
     # Интерфейс для выхода в интернет (нужен для всех протоколов)
     local default_if=$(get_default_interface)
@@ -613,6 +627,15 @@ EOF
         log_info "Masquerade: локальная заглушка (файлы в config/masquerade/html)"
     fi
 
+    # MTProto (mtg) для Telegram — только файлы + бот; контейнеры создаются при /add_client
+    if [ "$MTPROXY_ENABLED" = "true" ]; then
+        echo ""
+        log_info "MTProto-прокси (mtg): домен для generate-secret (FakeTLS)"
+        MTPROXY_FAKE_DOMAIN=$(prompt_input "Домен для секрета mtg (например ваш CDN/VPS-домен)" "cloudflare.com" "")
+        [ -z "$MTPROXY_FAKE_DOMAIN" ] && MTPROXY_FAKE_DOMAIN="cloudflare.com"
+        log_info "Клиенты: отдельный контейнер и порт на каждого пользователя бота (slug = ID клиента)."
+    fi
+
     echo ""
     log_success "Параметры конфигурации:"
     if [ -n "$WG_NETWORK" ]; then
@@ -623,6 +646,9 @@ EOF
     fi
     if [ "$HYSTERIA_ENABLED" = "true" ]; then
         log_info "  Hysteria2: порт $HYSTERIA_PORT"
+    fi
+    if [ "$MTPROXY_ENABLED" = "true" ]; then
+        log_info "  MTProto (mtg): включено, домен для secret: $MTPROXY_FAKE_DOMAIN"
     fi
     log_info "  Внешний интерфейс: $EXTERNAL_IF"
     echo ""
@@ -1722,6 +1748,8 @@ HYSTERIA_ENABLED="${HYSTERIA_ENABLED:-false}"
 HYSTERIA_PORT="${HYSTERIA_PORT:-}"
 HYSTERIA_SERVER="${HYSTERIA_SERVER:-}"
 HYSTERIA_SNI="${HYSTERIA_SNI:-}"
+MTPROXY_ENABLED="${MTPROXY_ENABLED:-false}"
+MTPROXY_FAKE_DOMAIN="${MTPROXY_FAKE_DOMAIN:-cloudflare.com}"
 EOF
     
     chmod 600 "$INSTALL_INFO_FILE"
@@ -1742,6 +1770,94 @@ load_install_info() {
     
     log_success "Метаданные загружены"
     return 0
+}
+
+# Копирование mtproxy-admin.sh и шаблона в $INSTALL_DIR (образ mtg для бота)
+install_mtproxy_stack() {
+    [ "$MTPROXY_ENABLED" != "true" ] && return 0
+    log_step "Установка MTProto (mtg): mtproxy-admin.sh"
+    local src_script="$SCRIPT_DIR/mtproxy-admin.sh"
+    local src_tpl="$SCRIPT_DIR/mtproxy/template/config.toml"
+    if [ ! -f "$src_script" ] || [ ! -f "$src_tpl" ]; then
+        log_error "Не найдены $src_script или $src_tpl (нужен полный клон репозитория Liberty)."
+        return 1
+    fi
+    mkdir -p "$INSTALL_DIR/mtproxy/users"
+    mkdir -p "$INSTALL_DIR/mtproxy/template"
+    cp -f "$src_script" "$INSTALL_DIR/mtproxy-admin.sh"
+    chmod +x "$INSTALL_DIR/mtproxy-admin.sh"
+    cp -f "$src_tpl" "$INSTALL_DIR/mtproxy/template/config.toml"
+    if [ -f "$SCRIPT_DIR/mtproxy/README.md" ]; then
+        cp -f "$SCRIPT_DIR/mtproxy/README.md" "$INSTALL_DIR/mtproxy/README.md"
+    fi
+    log_info "docker pull nineseconds/mtg:2 …"
+    docker pull nineseconds/mtg:2 -q >/dev/null 2>&1 || log_warning "Не удалось выполнить docker pull nineseconds/mtg:2"
+    log_success "MTProto: $INSTALL_DIR/mtproxy-admin.sh, данные: $INSTALL_DIR/mtproxy/"
+    return 0
+}
+
+# Записать MTPROXY_* в .env бота (после установки/обновления бота)
+sync_bot_mtproxy_dotenv() {
+    local bot_env="$INSTALL_DIR/telegram-bot/.env"
+    [ ! -f "$bot_env" ] && return 0
+    if [ -f "$INSTALL_DIR/.install_info" ]; then
+        # shellcheck source=/dev/null
+        . "$INSTALL_DIR/.install_info" 2>/dev/null || true
+    fi
+    log_info "Синхронизация MTPROXY_* в .env бота"
+    _bot_env_set_kv() {
+        local f="$1" key="$2" val="$3"
+        if grep -q "^${key}=" "$f" 2>/dev/null; then
+            sed -i "s#^${key}=.*#${key}=${val}#" "$f"
+        else
+            echo "" >> "$f"
+            echo "# MTProto (Liberty install.sh)" >> "$f"
+            echo "${key}=${val}" >> "$f"
+        fi
+    }
+    _bot_env_set_kv "$bot_env" "MTPROXY_ENABLED" "${MTPROXY_ENABLED:-false}"
+    _bot_env_set_kv "$bot_env" "MTPROXY_SCRIPT" "${INSTALL_DIR}/mtproxy-admin.sh"
+    _bot_env_set_kv "$bot_env" "MTPROXY_DATA_DIR" "${INSTALL_DIR}/mtproxy"
+    _bot_env_set_kv "$bot_env" "MTPROXY_FAKE_DOMAIN" "${MTPROXY_FAKE_DOMAIN:-cloudflare.com}"
+    log_success "Переменные MTProto в .env обновлены"
+}
+
+_restart_vpn_bot_if_active() {
+    if systemctl is-active --quiet vpn-bot.service 2>/dev/null; then
+        systemctl restart vpn-bot.service 2>/dev/null && log_success "Перезапущен vpn-bot.service" || log_warning "Перезапустите бота: systemctl restart vpn-bot.service"
+    fi
+}
+
+# Добавить MTProto на существующую установку (без docker-compose)
+add_mtproxy_to_existing() {
+    log_step "Добавление MTProto-прокси (mtg) на существующую установку"
+    if [ ! -f "$INSTALL_INFO_FILE" ]; then
+        log_error "Файл .install_info не найден."
+        return 1
+    fi
+    # shellcheck source=/dev/null
+    load_install_info || return 1
+    if [ -f "$INSTALL_DIR/mtproxy-admin.sh" ] && [ -f "$INSTALL_DIR/mtproxy/template/config.toml" ]; then
+        log_info "MTProto уже установлено (mtproxy-admin.sh на месте)."
+        MTPROXY_ENABLED=true
+        save_install_info true
+        sync_bot_mtproxy_dotenv
+        _restart_vpn_bot_if_active
+        log_info "Пользователь бота должен иметь право: sudo NOPASSWD на $INSTALL_DIR/mtproxy-admin.sh (см. mtproxy/README.md)."
+        return 0
+    fi
+    echo -ne "${BLUE}[?]${NC} Домен для FakeTLS / generate-secret [${MTPROXY_FAKE_DOMAIN:-cloudflare.com}]: " >&2
+    read -r mtp_dom < /dev/tty
+    mtp_dom="${mtp_dom:-${MTPROXY_FAKE_DOMAIN:-cloudflare.com}}"
+    [ -z "$mtp_dom" ] && mtp_dom="cloudflare.com"
+    MTPROXY_FAKE_DOMAIN="$mtp_dom"
+    MTPROXY_ENABLED=true
+    install_mtproxy_stack || return 1
+    save_install_info true
+    sync_bot_mtproxy_dotenv
+    _restart_vpn_bot_if_active
+    log_success "MTProto (mtg) добавлено. Задайте NOPASSWD для пользователя бота на $INSTALL_DIR/mtproxy-admin.sh"
+    log_info "См. также: $INSTALL_DIR/mtproxy/README.md или репозиторий liberty/mtproxy/README.md"
 }
 
 # Установка Telegram-бота: копируем ./telegram-bot в $INSTALL_DIR/telegram-bot и запускаем там install.sh
@@ -1781,13 +1897,15 @@ install_bot() {
     echo ""
     (cd "$BOT_DEST" && bash ./install.sh)
     echo ""
+    sync_bot_mtproxy_dotenv
+    _restart_vpn_bot_if_active
     log_success "Установка Telegram-бота завершена. Каталог: $BOT_DEST"
 }
 
 # Интерактивное меню в начале (сервер / только бот / сервер и бот / выход)
 show_start_menu() {
     echo ""
-    echo "  1) Установить сервер (протоколы: WG / Xray / Hysteria2 — на выбор)"
+    echo "  1) Установить сервер (протоколы: WG / Xray / Hysteria2 / MTProto — на выбор)"
     echo "  2) Установить только Telegram-бота"
     echo "  3) Установить сервер и Telegram-бота"
     echo "  4) Выход"
@@ -1963,23 +2081,25 @@ add_protocol_to_existing() {
     fi
     # shellcheck source=/dev/null
     load_install_info || return 1
-    local has_wg=0 has_xray=0 has_hysteria=0
+    local has_wg=0 has_xray=0 has_hysteria=0 has_mtproxy=0
     [ -f "$INSTALL_DIR/config/wg/wg0.conf" ] && grep -q "liberty-wg" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null && has_wg=1
     [ -f "$INSTALL_DIR/config/xray/config.json" ] && grep -q "xray-core" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null && has_xray=1
     [ -f "$INSTALL_DIR/config/hysteria/hysteria.yaml" ] && grep -q "hysteria:" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null && has_hysteria=1
+    [ -f "$INSTALL_DIR/mtproxy-admin.sh" ] && [ -f "$INSTALL_DIR/mtproxy/template/config.toml" ] && has_mtproxy=1
     echo ""
     echo "  Уже установлено:"
     [ "$has_wg" -eq 1 ] && echo -e "    ${GREEN}✓${NC} WireGuard" || echo "    — WireGuard"
     [ "$has_xray" -eq 1 ] && echo -e "    ${GREEN}✓${NC} Xray-core" || echo "    — Xray-core"
     [ "$has_hysteria" -eq 1 ] && echo -e "    ${GREEN}✓${NC} Hysteria2" || echo "    — Hysteria2"
+    [ "$has_mtproxy" -eq 1 ] && echo -e "    ${GREEN}✓${NC} MTProto (mtg)" || echo "    — MTProto (mtg)"
     echo ""
-    if [ "$has_wg" -eq 1 ] && [ "$has_xray" -eq 1 ] && [ "$has_hysteria" -eq 1 ]; then
+    if [ "$has_wg" -eq 1 ] && [ "$has_xray" -eq 1 ] && [ "$has_hysteria" -eq 1 ] && [ "$has_mtproxy" -eq 1 ]; then
         log_info "Все протоколы уже установлены. Добавлять нечего."
         return 0
     fi
     log_info "Какой протокол добавить? (Y/n для каждого)"
     echo ""
-    local add_wg=0 add_xray=0 add_hysteria=0
+    local add_wg=0 add_xray=0 add_hysteria=0 add_mtproxy=0
     local answer=""
     if [ "$has_wg" -eq 0 ]; then
         echo -ne "  Добавить WireGuard? (y/N): " >&2
@@ -1996,10 +2116,16 @@ add_protocol_to_existing() {
         read -r answer < /dev/tty
         [[ "$answer" =~ ^[yY] ]] && add_hysteria=1
     fi
-    [ "$add_wg" -eq 0 ] && [ "$add_xray" -eq 0 ] && [ "$add_hysteria" -eq 0 ] && log_info "Ничего не выбрано." && return 0
+    if [ "$has_mtproxy" -eq 0 ]; then
+        echo -ne "  Добавить MTProto-прокси (mtg) для Telegram + бота? (y/N): " >&2
+        read -r answer < /dev/tty
+        [[ "$answer" =~ ^[yY] ]] && add_mtproxy=1
+    fi
+    [ "$add_wg" -eq 0 ] && [ "$add_xray" -eq 0 ] && [ "$add_hysteria" -eq 0 ] && [ "$add_mtproxy" -eq 0 ] && log_info "Ничего не выбрано." && return 0
     [ "$add_wg" -eq 1 ] && add_wireguard_to_existing
     [ "$add_xray" -eq 1 ] && add_xray_to_existing
     [ "$add_hysteria" -eq 1 ] && add_hysteria_to_existing
+    [ "$add_mtproxy" -eq 1 ] && add_mtproxy_to_existing
     log_success "Готово."
 }
 
@@ -2184,7 +2310,7 @@ show_installation_menu() {
     echo ""
     echo "  1) Удаление всего установленного"
     echo "  2) Полная переустановка с нуля"
-    echo "  3) Добавить протокол (WireGuard / Xray / Hysteria2)"
+    echo "  3) Добавить протокол (WireGuard / Xray / Hysteria2 / MTProto)"
     echo "  4) Изменение IP-адреса и порта сервера"
     echo "  5) Установить или переустановить Telegram-бота"
     echo "  6) Выход"
@@ -2237,6 +2363,7 @@ uninstall() {
         log_info "  - Docker контейнер liberty-wg (если установлен)"
         log_info "  - Docker контейнер xray-core (если установлен)"
         log_info "  - Docker контейнер hysteria (если установлен)"
+        log_info "  - Контейнеры mtproto-proxy-* (MTProto mtg, если были)"
         log_info "  - Директория $INSTALL_DIR со всем содержимым"
         log_info "  - Все конфигурации и клиентские конфиги"
         echo ""
@@ -2307,6 +2434,16 @@ uninstall() {
 
     # Остановка и удаление контейнеров
     cd "$INSTALL_DIR" 2>/dev/null && docker compose down 2>/dev/null || true
+
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qE '^mtproto-proxy-'; then
+        log_info "Остановка контейнеров mtproto-proxy-*..."
+        docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E '^mtproto-proxy-' | while read -r mtc; do
+            [ -z "$mtc" ] && continue
+            docker stop "$mtc" 2>/dev/null || true
+            docker rm "$mtc" 2>/dev/null || true
+        done
+        log_success "Контейнеры MTProto (mtg) удалены"
+    fi
     
     if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^liberty-wg$"; then
         log_info "Остановка контейнера liberty-wg..."
@@ -2816,6 +2953,9 @@ print_summary() {
     if [ "$HYSTERIA_ENABLED" = "true" ]; then
         echo "Конфигурация Hysteria2: $CONFIG_DIR/hysteria/hysteria.yaml"
     fi
+    if [ "$MTPROXY_ENABLED" = "true" ]; then
+        echo "MTProto (mtg): $INSTALL_DIR/mtproxy-admin.sh, данные: $INSTALL_DIR/mtproxy/"
+    fi
     echo ""
     echo "Параметры конфигурации:"
     if [ -n "$WG_NETWORK" ]; then
@@ -2830,6 +2970,9 @@ print_summary() {
     if [ "$HYSTERIA_ENABLED" = "true" ]; then
         echo "  Hysteria2 порт: $HYSTERIA_PORT (UDP)"
         echo "  Hysteria2 сервер для ссылок: $HYSTERIA_SERVER"
+    fi
+    if [ "$MTPROXY_ENABLED" = "true" ]; then
+        echo "  MTProto (mtg): вкл., домен для secret: $MTPROXY_FAKE_DOMAIN; прокси на клиента — через бота"
     fi
     echo "  Внешний интерфейс: $EXTERNAL_IF"
     echo ""
@@ -2863,6 +3006,11 @@ print_summary() {
         echo "Hysteria2:"
         echo "  Для просмотра логов: docker logs hysteria"
         echo "  Порт: $HYSTERIA_PORT (UDP), сервер для ссылок: $HYSTERIA_SERVER"
+    fi
+    if [ "$MTPROXY_ENABLED" = "true" ]; then
+        echo "MTProto (mtg):"
+        echo "  Скрипт: $INSTALL_DIR/mtproxy-admin.sh list | add <slug>"
+        echo "  Клиенты создаются через Telegram-бота (/add_client); sudo NOPASSWD для бота на mtproxy-admin.sh — см. $INSTALL_DIR/mtproxy/README.md"
     fi
     
     echo ""
@@ -2899,6 +3047,7 @@ main() {
         load_install_info 2>/dev/null || true
         XRAY_ENABLED=false
         HYSTERIA_ENABLED=false
+        MTPROXY_ENABLED=false
     fi
     
     # Запрос параметров пользователя и SSH (если нужно)
@@ -2942,6 +3091,10 @@ main() {
     
     create_docker_compose
     start_container
+
+    if [ "$MTPROXY_ENABLED" = "true" ]; then
+        install_mtproxy_stack || log_warning "Не удалось установить файлы MTProto — добавьте позже через меню «Добавить протокол»"
+    fi
 
     # Небольшая задержка перед проверками
     sleep 5

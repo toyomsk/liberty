@@ -11,6 +11,7 @@ import yaml
 
 from bot.utils import get_external_ip
 from config.settings import (
+    DOCKER_COMPOSE_DIR,
     HYSTERIA_CONFIG_DIR,
     HYSTERIA_PORT,
     HYSTERIA_SERVER,
@@ -27,19 +28,40 @@ def _config_path() -> str:
 
 
 def _reload_hysteria() -> bool:
-    """Restart hysteria container to pick up config changes (no SIGHUP support)."""
-    try:
-        subprocess.run(
-            ["docker", "restart", "hysteria"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        logger.info("Hysteria restarted via docker restart hysteria")
-        return True
-    except Exception as e:
-        logger.warning("docker restart hysteria failed: %s", e)
-        return False
+    """
+    Подхватить изменения hysteria.yaml: у Hysteria2 нет мягкого reload конфига
+    (в отличие от Xray + SIGHUP); userpass меняется только после рестарта процесса.
+    См. https://github.com/apernet/hysteria/issues/1350 — hot reload не планируют.
+    """
+    compose_file = os.path.join(DOCKER_COMPOSE_DIR, "docker-compose.yml")
+    attempts = [
+        (["docker", "restart", "hysteria"], None, "docker restart hysteria"),
+        (
+            ["docker", "compose", "-f", compose_file, "restart", "hysteria"],
+            DOCKER_COMPOSE_DIR,
+            "docker compose restart hysteria",
+        ),
+    ]
+    for cmd, cwd, label in attempts:
+        if cmd[0] == "docker" and "compose" in cmd and not os.path.isfile(compose_file):
+            continue
+        try:
+            r = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                cwd=cwd,
+            )
+            if r.returncode == 0:
+                logger.info("Hysteria: %s", label)
+                return True
+            err = (r.stderr or r.stdout or "").strip()
+            logger.debug("%s failed rc=%s: %s", label, r.returncode, err[:500])
+        except Exception as e:
+            logger.debug("%s: %s", label, e)
+    logger.warning("Hysteria: не удалось перезапустить контейнер (docker restart и compose)")
+    return False
 
 
 def _load_config() -> Optional[dict]:

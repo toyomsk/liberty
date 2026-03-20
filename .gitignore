@@ -7,3 +7,6 @@ telegram-bot/venv/
 telegram-bot/.env
 telegram-bot/*.db
 telegram-bot/clients.db
+
+# MTProto multi-user (секреты в config.toml)
+mtproxy/users/

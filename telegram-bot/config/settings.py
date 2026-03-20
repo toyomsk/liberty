@@ -289,6 +289,35 @@ HYSTERIA_ENABLED = bool(
 )
 
 
+def _env_bool(name: str, default: str = "false") -> bool:
+    v = os.getenv(name, default).strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
+# MTProto proxy (mtg): см. mtproxy-admin.sh в корне Liberty, данные в DOCKER_COMPOSE_DIR/mtproxy
+MTPROXY_ENABLED = _env_bool("MTPROXY_ENABLED", "false")
+MTPROXY_SCRIPT = os.getenv(
+    "MTPROXY_SCRIPT",
+    os.path.join(DOCKER_COMPOSE_DIR, "mtproxy-admin.sh"),
+)
+MTPROXY_DATA_DIR = os.getenv(
+    "MTPROXY_DATA_DIR",
+    os.path.join(DOCKER_COMPOSE_DIR, "mtproxy"),
+)
+MTPROXY_FAKE_DOMAIN = os.getenv("MTPROXY_FAKE_DOMAIN", "cloudflare.com").strip() or "cloudflare.com"
+MTPROXY_USE_SUDO = _env_bool("MTPROXY_USE_SUDO", "true")
+
+MTPROXY_READY = bool(
+    MTPROXY_ENABLED
+    and os.path.isfile(MTPROXY_SCRIPT)
+)
+if MTPROXY_ENABLED and not os.path.isfile(MTPROXY_SCRIPT):
+    logger.warning(
+        "MTPROXY_ENABLED=true, но скрипт не найден: %s (положите mtproxy-admin.sh или задайте MTPROXY_SCRIPT)",
+        MTPROXY_SCRIPT,
+    )
+
+
 def is_admin(user_id: int) -> bool:
     """Проверка, является ли пользователь администратором."""
     return user_id in ADMIN_IDS
