@@ -56,9 +56,12 @@ def main() -> None:
                 add_client_handler,
                 get_config_handler,
                 list_clients_handler,
+                set_expiry_handler,
                 status_handler,
                 restart_handler,
                 delete_client_handler,
+                disable_client_handler,
+                enable_client_handler,
                 interactive_message_handler,
                 button_handler
             )
@@ -74,6 +77,21 @@ def main() -> None:
             logger.error("Проверьте правильность BOT_TOKEN")
             sys.exit(1)
         
+        # Периодическая авто-блокировка истёкших клиентов
+        try:
+            from bot.expiry_manager import expiry_job
+
+            # Проверяем часто, чтобы блокировка была максимально "в моменте".
+            application.job_queue.run_repeating(
+                expiry_job,
+                interval=60,
+                first=10,
+                name="expiry_job",
+            )
+        except Exception as e:
+            logger.error(f"Ошибка запуска expiry_job: {e}", exc_info=True)
+            sys.exit(1)
+        
         # Регистрация обработчиков команд
         application.add_handler(CommandHandler("start", start_handler))
         application.add_handler(CommandHandler("help", help_handler))
@@ -81,9 +99,12 @@ def main() -> None:
         application.add_handler(CommandHandler("add_client", add_client_handler))
         application.add_handler(CommandHandler("get_config", get_config_handler))
         application.add_handler(CommandHandler("list_clients", list_clients_handler))
+        application.add_handler(CommandHandler("set_expiry", set_expiry_handler))
         application.add_handler(CommandHandler("status", status_handler))
         application.add_handler(CommandHandler("restart", restart_handler))
         application.add_handler(CommandHandler("delete_client", delete_client_handler))
+        application.add_handler(CommandHandler("disable_client", disable_client_handler))
+        application.add_handler(CommandHandler("enable_client", enable_client_handler))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, interactive_message_handler))
         application.add_handler(CallbackQueryHandler(button_handler))
         

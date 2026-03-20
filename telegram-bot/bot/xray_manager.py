@@ -100,6 +100,21 @@ def _set_clients(data: dict, clients: list) -> None:
     data["inbounds"][0]["settings"]["clients"] = clients
 
 
+def _ensure_policy_max_ips(data: dict, max_ips: int) -> None:
+    """
+    Ensure policy.levels.1.maxIPs exists so we can use client.level=1.
+    """
+    if not data.get("policy"):
+        data["policy"] = {}
+    policy = data["policy"]
+    if not policy.get("levels"):
+        policy["levels"] = {}
+    levels = policy["levels"]
+    if not levels.get("1"):
+        levels["1"] = {}
+    levels["1"]["maxIPs"] = max_ips
+
+
 def create_client(client_id: str, remark: Optional[str] = None) -> Tuple[bool, str]:
     """
     Add Xray client with email=client_id. Generate VLESS uuid, save config, SIGHUP.
@@ -131,6 +146,7 @@ def create_client(client_id: str, remark: Optional[str] = None) -> Tuple[bool, s
     data = _load_config()
     if data is None:
         return False, "Ошибка чтения config.json"
+    _ensure_policy_max_ips(data, max_ips=3)
     clients = _get_clients(data)
     for c in clients:
         if c.get("email") == client_id:
@@ -139,6 +155,7 @@ def create_client(client_id: str, remark: Optional[str] = None) -> Tuple[bool, s
         "id": vless_uuid,
         "flow": "xtls-rprx-vision",
         "email": client_id,
+        "level": 1,
     })
     _set_clients(data, clients)
     try:
@@ -175,6 +192,45 @@ def delete_client(client_id: str) -> Tuple[bool, str]:
     except Exception as e:
         return False, f"Ошибка записи config.json: {e}"
     _reload_xray()
+    return True, "OK"
+
+
+def enable_client_with_uuid(
+    client_id: str,
+    vless_uuid: str,
+    remark: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """
+    Re-add an existing Xray client using a stored uuid (no regeneration).
+    """
+    if not all([XRAY_PUBLIC_KEY, XRAY_PORT, XRAY_SERVER_NAME, XRAY_SHORT_ID]):
+        return False, "Xray не настроен: нет метаданных"
+    if not vless_uuid:
+        return False, "Пустой vless_uuid"
+    path = _config_path()
+    if not os.path.exists(path):
+        return False, "Xray не настроен: config.json не найден"
+    data = _load_config()
+    if data is None:
+        return False, "Ошибка чтения config.json"
+    _ensure_policy_max_ips(data, max_ips=3)
+    clients = _get_clients(data)
+    for c in clients:
+        if c.get("email") == client_id:
+            return True, "Уже включено (клиент уже есть)"
+    clients.append({
+        "id": vless_uuid,
+        "flow": "xtls-rprx-vision",
+        "email": client_id,
+        "level": 1,
+    })
+    _set_clients(data, clients)
+    try:
+        _save_config(data)
+    except Exception as e:
+        return False, f"Ошибка записи config.json: {e}"
+    _reload_xray()
+    # remark is intentionally unused here; link-building happens in get_client_config.
     return True, "OK"
 
 

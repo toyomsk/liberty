@@ -114,6 +114,37 @@ def remove_for_client(client_id: str) -> None:
         logger.warning("mtproxy remove %s: %s", client_id, (out or "")[:1000])
 
 
+def disable_for_client(client_id: str) -> None:
+    """Disable mtproxy client without deleting its user directory."""
+    if not slug_for_client_id(client_id):
+        return
+    user_dir = os.path.join(MTPROXY_DATA_DIR, "users", client_id)
+    if not os.path.isdir(user_dir):
+        return
+    code, out, _ = _run(["disable", client_id], timeout=120)
+    if code != 0:
+        logger.warning("mtproxy disable %s: %s", client_id, (out or "")[:1000])
+
+
+def enable_for_client(client_id: str) -> Tuple[bool, str]:
+    """Enable previously disabled mtproxy client."""
+    if not slug_for_client_id(client_id):
+        return False, "некорректный client_id для mtproxy slug"
+    user_dir = os.path.join(MTPROXY_DATA_DIR, "users", client_id)
+    if not os.path.isdir(user_dir):
+        return False, "mtproxy user directory не найден"
+
+    code, combined, _ = _run(["enable", client_id], timeout=240)
+    if code != 0:
+        logger.error("mtproxy enable failed (%s): %s", code, combined[:2000])
+        return False, combined.strip() or f"exit {code}"
+
+    ok, link_or_err = get_link_plain(client_id)
+    if ok:
+        return True, link_or_err
+    return False, link_or_err or "нет tg:// ссылки после enable"
+
+
 def has_mtproxy_user(client_id: str) -> bool:
     if not slug_for_client_id(client_id):
         return False

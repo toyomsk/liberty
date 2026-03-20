@@ -277,6 +277,93 @@ cmd_remove() {
   ok "Удалён $slug"
 }
 
+cmd_disable() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "Использование: disable <slug>"
+  validate_slug "$slug"
+  local user_dir="$USERS_DIR/$slug"
+  [[ -d "$user_dir" ]] || die "Нет пользователя: $slug"
+
+  local meta="$user_dir/meta.json"
+  [[ -f "$meta" ]] || die "Нет meta.json для пользователя: $slug"
+
+  local host_port=""
+  host_port="$(read_host_port_from_meta "$meta")"
+  [[ -n "$host_port" ]] || die "Не удалось прочитать host_port из meta.json для $slug"
+
+  local cname
+  cname="$(container_name "$slug")"
+
+  # Останавливаем контейнер, но сохраняем каталог пользователя.
+  "${DOCKER[@]}" stop "$cname" >/dev/null 2>&1 || true
+  "${DOCKER[@]}" rm "$cname" >/dev/null 2>&1 || true
+
+  # Снимаем разрешение порта.
+  iptables_maybe_remove "$host_port"
+
+  ok "Отключён $slug (контейнер остановлен, каталог сохранён)"
+}
+
+cmd_enable() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "Использование: enable <slug>"
+  validate_slug "$slug"
+  local user_dir="$USERS_DIR/$slug"
+  [[ -d "$user_dir" ]] || die "Нет пользователя: $slug"
+
+  local meta="$user_dir/meta.json"
+  [[ -f "$meta" ]] || die "Нет meta.json для пользователя: $slug"
+
+  local host_port=""
+  host_port="$(read_host_port_from_meta "$meta")"
+  [[ -n "$host_port" ]] || die "Не удалось прочитать host_port из meta.json для $slug"
+
+  local cfg="$user_dir/config.toml"
+  [[ -f "$cfg" ]] || die "Нет config.toml для пользователя: $slug"
+
+  local domain=""
+  domain="$(sed -n 's/.*"fake_domain"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$meta" | head -n1)"
+  [[ -n "$domain" ]] || domain="$DEFAULT_FAKE_DOMAIN"
+
+  # На всякий случай гарантируем наличие secret + нужную concurrency.
+  ensure_user_config_secret "$cfg" "$domain" >/dev/null
+  ensure_concurrency_in_config "$cfg" >/dev/null
+
+  local cname
+  cname="$(container_name "$slug")"
+
+  # Поднимаем контейнер снова (без генерации новых данных пользователя).
+  "${DOCKER[@]}" stop "$cname" >/dev/null 2>&1 || true
+  "${DOCKER[@]}" rm "$cname" >/dev/null 2>&1 || true
+
+  "${DOCKER[@]}" run -d \
+    --name "$cname" \
+    --restart always \
+    -p "${host_port}:443" \
+    -v "$cfg:/config.toml" \
+    "$IMAGE" >/dev/null
+
+  iptables_allow_port "$host_port"
+
+  sleep 1
+  if "${DOCKER[@]}" ps --format '{{.Names}}' | grep -qx "$cname"; then
+    ok "Включён $slug (контейнер запущен на порту $host_port)"
+  else
+    echo -e "${YELLOW}Контейнер не в списке running; логи:${NC}"
+    "${DOCKER[@]}" logs "$cname" 2>&1 | tail -30 || true
+    die "Сбой запуска контейнера $cname"
+  fi
+
+  local ip
+  ip="$(get_ipv4)"
+  local secret
+  secret="$(read_secret_from_toml "$cfg")"
+  [[ -n "$secret" ]] || die "Пустой secret в $cfg"
+
+  echo ""
+  echo -e "${GREEN}tg://proxy?server=${ip}&port=${host_port}&secret=${secret}${NC}"
+}
+
 cmd_list() {
   mkdir -p "$USERS_DIR"
   local found=0
@@ -388,6 +475,8 @@ mtproxy-admin.sh — несколько mtg по плану A
 
   add <slug> [--domain HOST] [--port N]   создать пользователя, поднять контейнер
   remove <slug>                           остановить, удалить контейнер и каталог
+  disable <slug>                          остановить контейнер и снять iptables, каталог сохранить
+  enable <slug>                           поднять контейнер из сохранённого каталога
   list                                    список пользователей
   link [--plain] <slug>                  ссылка tg://proxy?... (--plain без ANSI, для бота)
   restart <slug>
@@ -409,6 +498,8 @@ main() {
   case "$cmd" in
     add) cmd_add "$@" ;;
     remove) cmd_remove "$@" ;;
+    disable) cmd_disable "$@" ;;
+    enable) cmd_enable "$@" ;;
     list) cmd_list "$@" ;;
     link) cmd_link "$@" ;;
   restart) cmd_restart "$@" ;;

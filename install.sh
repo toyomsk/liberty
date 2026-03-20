@@ -983,6 +983,13 @@ generate_xray_config() {
   "log": {
     "loglevel": "warning"
   },
+  "policy": {
+    "levels": {
+      "1": {
+        "maxIPs": 3
+      }
+    }
+  },
   "inbounds": [
     {
       "port": ${XRAY_PORT},

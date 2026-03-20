@@ -144,6 +144,49 @@ def create_client(client_id: str, remark: Optional[str] = None) -> Tuple[bool, s
     return True, link
 
 
+def enable_client_with_password(
+    client_id: str,
+    password: str,
+    remark: Optional[str] = None,
+) -> Tuple[bool, str]:
+    """
+    Re-add an existing Hysteria2 client using stored password (no regeneration).
+    """
+    if not HYSTERIA_PORT:
+        return False, "Hysteria2 не настроен: нет порта (добавьте HYSTERIA_PORT в .install_info или в hysteria.yaml listen)"
+    path = _config_path()
+    if not os.path.exists(path):
+        return False, "Hysteria2 не настроен: hysteria.yaml не найден"
+    data = _load_config()
+    if data is None:
+        return False, "Ошибка чтения hysteria.yaml"
+    userpass = _get_userpass(data)
+    existing = userpass.get(client_id)
+    if existing == password:
+        return True, "Уже включено (userpass совпадает)"
+    userpass[client_id] = password
+    _set_userpass(data, userpass)
+    try:
+        _save_config(data)
+    except Exception as e:
+        return False, f"Ошибка записи hysteria.yaml: {e}"
+    _reload_hysteria()
+
+    server = HYSTERIA_SERVER or get_external_ip()
+    port = HYSTERIA_PORT or "8443"
+    host_port = f"{server}:{port}"
+    auth_enc = quote(f"{client_id}:{password}", safe="")
+    link = f"hysteria2://{auth_enc}@{host_port}/"
+    params = []
+    if HYSTERIA_SNI:
+        params.append(f"sni={quote(HYSTERIA_SNI, safe='')}")
+    if params:
+        link += "?" + "&".join(params)
+    if remark:
+        link += f"#{quote(remark, safe='')}"
+    return True, link
+
+
 def delete_client(client_id: str) -> Tuple[bool, str]:
     """Remove userpass entry for client_id; save config, restart."""
     if not os.path.exists(_config_path()):

@@ -117,9 +117,14 @@ PersistentKeepalive = 25"""
 def delete_client(
     client_name: str,
     vpn_config_dir: str,
-    docker_compose_dir: str
+    docker_compose_dir: str,
+    remove_client_config: bool = True,
 ) -> Tuple[bool, str]:
-    """Удалить клиента."""
+    """Disable/delete client in server config.
+
+    If remove_client_config=False, we remove the peer from wg0.conf but keep
+    the client config file so credentials/config can be re-enabled later.
+    """
     try:
         client_config_path = os.path.join(vpn_config_dir, f"{client_name}.conf")
         server_config_path = os.path.join(vpn_config_dir, "wg0.conf")
@@ -147,7 +152,8 @@ def delete_client(
                 re.DOTALL
             )
             if not peer_match:
-                os.remove(client_config_path)
+                if remove_client_config and os.path.exists(client_config_path):
+                    os.remove(client_config_path)
                 return True, f"Файл конфига удален, но не удалось найти ключ для удаления из серверного конфига"
             client_public_key = peer_match.group(1).strip()
         else:
@@ -163,12 +169,14 @@ def delete_client(
                 )
                 if result.returncode != 0:
                     logger.error(f"Ошибка генерации публичного ключа: {result.stderr}")
-                    os.remove(client_config_path)
+                    if remove_client_config and os.path.exists(client_config_path):
+                        os.remove(client_config_path)
                     return False, f"Ошибка генерации публичного ключа из приватного"
                 client_public_key = result.stdout.strip()
             except Exception as e:
                 logger.error(f"Ошибка генерации публичного ключа: {e}")
-                os.remove(client_config_path)
+                if remove_client_config and os.path.exists(client_config_path):
+                    os.remove(client_config_path)
                 return False, f"Ошибка генерации публичного ключа: {e}"
         
         logger.info(f"Ищем пир с публичным ключом клиента: {client_public_key[:20]}...")
@@ -243,14 +251,102 @@ def delete_client(
                 logger.warning(f"Пир с ключом {client_public_key[:20]}... не найден в серверном конфиге")
         
         # Удаляем файл конфига клиента
-        os.remove(client_config_path)
+        if remove_client_config and os.path.exists(client_config_path):
+            os.remove(client_config_path)
         
-        logger.info(f"Клиент {client_name} успешно удален")
-        return True, f"Клиент `{client_name}` успешно удален"
+        if remove_client_config:
+            logger.info(f"Клиент {client_name} успешно удален")
+            return True, f"Клиент `{client_name}` успешно удален"
+        logger.info(f"Peer клиента {client_name} отключен (config сохранен)")
+        return True, f"Peer `{client_name}` отключен (config сохранен)"
     
     except Exception as e:
         logger.error(f"Ошибка удаления клиента {client_name}: {e}")
         return False, f"Ошибка удаления: {e}"
+
+
+def enable_client_peer(
+    client_name: str,
+    vpn_config_dir: str,
+) -> Tuple[bool, str]:
+    """
+    Re-enable an existing client by adding its peer back to wg0.conf.
+
+    Credentials are read from `<vpn_config_dir>/<client_name>.conf` and keys
+    are not regenerated.
+    """
+    try:
+        client_config_path = os.path.join(vpn_config_dir, f"{client_name}.conf")
+        server_config_path = os.path.join(vpn_config_dir, "wg0.conf")
+
+        if not os.path.exists(client_config_path):
+            return False, f"Клиентский конфиг не найден: {client_config_path}"
+        if not os.path.exists(server_config_path):
+            return False, f"Серверный конфиг не найден: {server_config_path}"
+
+        with open(client_config_path, "r") as f:
+            client_config = f.read()
+
+        interface_match = re.search(
+            r'\[Interface\].*?PrivateKey\s*=\s*([^\s]+)',
+            client_config,
+            re.DOTALL,
+        )
+        address_match = re.search(
+            r'^Address\s*=\s*([^\s]+)',
+            client_config,
+            re.MULTILINE,
+        )
+        psk_match = re.search(
+            r'\[Peer\].*?PresharedKey\s*=\s*([^\s]+)',
+            client_config,
+            re.DOTALL,
+        )
+
+        if not interface_match:
+            return False, "В клиентском конфиге не найден PrivateKey"
+        if not address_match:
+            return False, "В клиентском конфиге не найден Address"
+        if not psk_match:
+            return False, "В клиентском конфиге не найден PresharedKey"
+
+        client_private_key = interface_match.group(1).strip()
+        client_address = address_match.group(1).strip()  # e.g. 10.10.1.2/32
+        preshared_key = psk_match.group(1).strip()
+
+        result = subprocess.run(
+            ["wg", "pubkey"],
+            input=client_private_key,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0 or not result.stdout.strip():
+            logger.error("Ошибка генерации публичного ключа: %s", result.stderr)
+            return False, "Ошибка генерации public key из private key"
+        client_public_key = result.stdout.strip()
+
+        with open(server_config_path, "r") as f:
+            server_content = f.read()
+
+        if f"PublicKey = {client_public_key}" in server_content:
+            return True, "Уже включено (peer уже есть)"
+
+        peer_config = f"""
+[Peer]
+PublicKey = {client_public_key}
+PresharedKey = {preshared_key}
+AllowedIPs = {client_address}
+"""
+        with open(server_config_path, "a") as f:
+            f.write(peer_config)
+
+        logger.info("Peer включен для клиента %s", client_name)
+        return True, "OK"
+    except Exception as e:
+        logger.error("Ошибка enable_client_peer для %s: %s", client_name, e)
+        return False, f"Ошибка enable_client_peer: {e}"
+
 
 def list_clients(vpn_config_dir: str, docker_compose_dir: str = None) -> str:
     """Получить список клиентов (по конфигам WG). Используется для миграции; основной список — из БД."""
