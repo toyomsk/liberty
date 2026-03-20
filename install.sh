@@ -1909,6 +1909,61 @@ install_bot() {
     log_success "Установка Telegram-бота завершена. Каталог: $BOT_DEST"
 }
 
+# Обновление Telegram-бота: синхронизация кода с репозиторием, зависимости, перезапуск сервиса
+update_bot() {
+    local BOT_DEST="$INSTALL_DIR/telegram-bot"
+
+    log_step "Обновление Telegram-бота"
+
+    local BOT_SOURCE=""
+    if [ -d "$SCRIPT_DIR/telegram-bot" ] && [ -f "$SCRIPT_DIR/telegram-bot/requirements.txt" ]; then
+        BOT_SOURCE="$SCRIPT_DIR/telegram-bot"
+    fi
+    if [ -z "$BOT_SOURCE" ]; then
+        log_error "Директория telegram-bot не найдена (ожидается $SCRIPT_DIR/telegram-bot)."
+        return 1
+    fi
+
+    if [ ! -d "$BOT_DEST" ] || [ ! -f "$BOT_DEST/requirements.txt" ]; then
+        log_error "Бот не установлен в $BOT_DEST. Сначала установите бота (п. 5 меню)."
+        return 1
+    fi
+
+    log_info "Синхронизация кода: $BOT_SOURCE → $BOT_DEST..."
+    if command -v rsync &>/dev/null; then
+        rsync -a --exclude=venv --exclude=__pycache__ --exclude=.env --exclude=.git \
+            "$BOT_SOURCE/" "$BOT_DEST/"
+    else
+        (cd "$BOT_SOURCE" && tar cf - --exclude=venv --exclude=__pycache__ --exclude=.env --exclude=.git .) \
+            | (cd "$BOT_DEST" && tar xf -)
+    fi
+
+    if [ ! -f "$BOT_DEST/install.sh" ]; then
+        log_error "В $BOT_DEST не найден install.sh после синхронизации."
+        return 1
+    fi
+
+    if [ -f "$BOT_DEST/venv/bin/pip" ]; then
+        log_info "Обновление Python-зависимостей..."
+        if "$BOT_DEST/venv/bin/pip" install -r "$BOT_DEST/requirements.txt" -q 2>/dev/null; then
+            log_success "Зависимости обновлены"
+        else
+            log_warning "Не удалось обновить зависимости. Выполните: cd $BOT_DEST && venv/bin/pip install -r requirements.txt"
+        fi
+    else
+        log_warning "Виртуальное окружение не найдено ($BOT_DEST/venv). Переустановите бота (п. 5 меню)."
+    fi
+
+    sync_bot_mtproxy_dotenv
+    if systemctl cat vpn-bot.service &>/dev/null; then
+        systemctl restart vpn-bot.service 2>/dev/null && log_success "Перезапущен vpn-bot.service" \
+            || log_warning "Не удалось перезапустить vpn-bot.service"
+    else
+        log_warning "Юнит vpn-bot.service не найден. Установите бота (п. 5 меню)."
+    fi
+    log_success "Обновление Telegram-бота завершено. Каталог: $BOT_DEST"
+}
+
 # Интерактивное меню в начале (сервер / только бот / сервер и бот / выход)
 show_start_menu() {
     echo ""
@@ -2320,12 +2375,13 @@ show_installation_menu() {
     echo "  3) Добавить протокол (WireGuard / Xray / Hysteria2 / MTProto)"
     echo "  4) Изменение IP-адреса и порта сервера"
     echo "  5) Установить или переустановить Telegram-бота"
-    echo "  6) Выход"
+    echo "  6) Обновить Telegram-бота"
+    echo "  7) Выход"
     echo ""
     
     local choice=""
-    while [[ ! "$choice" =~ ^[1-6]$ ]]; do
-        echo -ne "${BLUE}[?]${NC} Ваш выбор (1-6): " >&2
+    while [[ ! "$choice" =~ ^[1-7]$ ]]; do
+        echo -ne "${BLUE}[?]${NC} Ваш выбор (1-7): " >&2
         read choice < /dev/tty
     done
     
@@ -2351,6 +2407,11 @@ show_installation_menu() {
             exit 0
             ;;
         6)
+            update_bot
+            log_info "Для выхода запустите скрипт снова."
+            exit 0
+            ;;
+        7)
             log_info "Выход из скрипта"
             exit 0
             ;;

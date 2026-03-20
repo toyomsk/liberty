@@ -7,7 +7,12 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+)
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode, ChatAction
 
@@ -22,6 +27,33 @@ STATE_GET_CONFIG_ARG = "get_config_arg"
 STATE_DELETE_CLIENT_ID = "delete_client_id"
 
 CANCEL_WORDS = ("отмена", "cancel")
+
+# ReplyKeyboard: подписи должны совпадать с текстом кнопки символ в символ.
+BTN_LIST_CLIENTS = "📋 Список клиентов"
+BTN_ADD_CLIENT = "➕ Создать клиента"
+BTN_GET_CONFIG = "📥 Получить конфиг"
+BTN_SET_EXPIRY = "🗓 Изменить срок"
+BTN_DISABLE = "⏸ Отключить клиента"
+BTN_ENABLE = "▶️ Включить клиента"
+BTN_DELETE = "🗑 Удалить клиента"
+BTN_STATUS = "📊 Статус сервера"
+BTN_RESTART = "🔄 Перезапуск VPN"
+BTN_HELP = "❓ Справка"
+BTN_CANCEL_KB = "❌ Отмена ввода"
+BTN_MAIN = "🏠 Главное меню"
+
+
+def main_reply_keyboard() -> ReplyKeyboardMarkup:
+    """Постоянная клавиатура внизу чата (как ReplyKeyboardMarkup)."""
+    return ReplyKeyboardMarkup(
+        [
+            [BTN_LIST_CLIENTS, BTN_ADD_CLIENT, BTN_GET_CONFIG],
+            [BTN_SET_EXPIRY, BTN_DISABLE, BTN_ENABLE],
+            [BTN_DELETE, BTN_STATUS, BTN_RESTART],
+            [BTN_HELP, BTN_CANCEL_KB, BTN_MAIN],
+        ],
+        resize_keyboard=True,
+    )
 
 from config.settings import (
     is_admin,
@@ -117,7 +149,7 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     welcome_text = """🎛 <b>Liberty Bot</b>
 
-Доступные команды (интерактивный ввод, отмена: /cancel):
+Команды доступны кнопками внизу или через slash (интерактивный ввод, отмена: /cancel или «❌ Отмена ввода»):
 /add_client — Создать клиента (далее ввод имени + срок действия)
 /list_clients — Список клиентов (ID и имя)
 /get_config — Получить конфиг (далее ID или имя)
@@ -126,13 +158,17 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 /disable_client — Отключить клиента без изменения срока (далее ID/имя)
 /enable_client — Включить клиента без изменения срока (далее ID/имя)
 /status — Статус сервера
-/restart — Перезапуск VPN-сервера
+/restart — Перезапуск VPN (с подтверждением)
 /cancel — Выход из режима ввода
 /help — Эта справка"""
     if MTPROXY_READY:
         welcome_text += "\n\n<i>При создании клиента также поднимается отдельный MTProto-прокси (mtg), ссылка приходит вместе с конфигом.</i>"
 
-    await update.message.reply_text(welcome_text, parse_mode=ParseMode.HTML)
+    await update.message.reply_text(
+        welcome_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_reply_keyboard(),
+    )
 
 
 async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -148,7 +184,10 @@ async def cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     context.user_data.pop("state", None)
     context.user_data.pop("pending_add_client", None)
     context.user_data.pop("pending_set_expiry", None)
-    await update.message.reply_text("✅ Режим отменён.")
+    await update.message.reply_text(
+        "✅ Режим отменён.",
+        reply_markup=main_reply_keyboard(),
+    )
 
 def _format_expires_at(expires_at: Optional[int]) -> str:
     if expires_at is None:
@@ -497,7 +536,8 @@ async def add_client_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["state"] = STATE_ADD_CLIENT_NAME
     context.user_data.pop("pending_add_client", None)
     await update.message.reply_text(
-        "📝 Введите имя клиента (латиница, цифры, _ и -). Для отмены: /cancel"
+        "📝 Введите имя клиента (латиница, цифры, _ и -). Для отмены: /cancel",
+        reply_markup=main_reply_keyboard(),
     )
 
 
@@ -658,7 +698,8 @@ async def get_config_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
     context.user_data["state"] = STATE_GET_CONFIG_ARG
     await update.message.reply_text(
-        "📝 Введите ID или имя клиента. Для отмены: /cancel"
+        "📝 Введите ID или имя клиента. Для отмены: /cancel",
+        reply_markup=main_reply_keyboard(),
     )
 
 
@@ -671,7 +712,8 @@ async def set_expiry_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["state"] = STATE_SET_EXPIRY_CLIENT
     context.user_data.pop("pending_set_expiry", None)
     await update.message.reply_text(
-        "📝 Введите ID или имя клиента. Для отмены: /cancel"
+        "📝 Введите ID или имя клиента. Для отмены: /cancel",
+        reply_markup=main_reply_keyboard(),
     )
 
 
@@ -686,7 +728,10 @@ async def list_clients_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     rows = db_list_clients(DB_PATH)
     if not rows:
-        await update.message.reply_text("👥 Клиенты не найдены")
+        await update.message.reply_text(
+            "👥 Клиенты не найдены",
+            reply_markup=main_reply_keyboard(),
+        )
         return
 
     total = len(rows)
@@ -706,7 +751,11 @@ async def list_clients_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         if i < total:
             result += "\n"
 
-    await update.message.reply_text(result, parse_mode=ParseMode.MARKDOWN_V2)
+    await update.message.reply_text(
+        result,
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=main_reply_keyboard(),
+    )
 
 
 async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -719,11 +768,15 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await _send_typing(update, context)
 
     status = get_server_status(DOCKER_COMPOSE_DIR, AWG_CONFIG_DIR)
-    await update.message.reply_text(status, parse_mode=ParseMode.MARKDOWN_V2)
+    await update.message.reply_text(
+        status,
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=main_reply_keyboard(),
+    )
 
 
 async def restart_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Перезапуск VPN."""
+    """Перезапуск VPN — только после подтверждения по inline-кнопке."""
     user_id = update.effective_user.id
 
     if not is_admin(user_id):
@@ -731,12 +784,14 @@ async def restart_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
     await _send_typing(update, context)
 
+    keyboard = [
+        [InlineKeyboardButton("✅ Да, перезапустить", callback_data="restart_yes")],
+        [InlineKeyboardButton("❌ Отмена", callback_data="restart_no")],
+    ]
     await update.message.reply_text(
-        "🔄 Применяю изменения конфигурации VPN\\.\\.\\.",
-        parse_mode=ParseMode.MARKDOWN_V2,
+        "⚠️ Перезапустить VPN-сервер?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
-    success, message = restart_vpn(DOCKER_COMPOSE_DIR, AWG_CONFIG_DIR)
-    await update.message.reply_text(message)
 
 
 async def _do_delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, client_id: str) -> None:
@@ -770,7 +825,8 @@ async def delete_client_handler(update: Update, context: ContextTypes.DEFAULT_TY
         return
     context.user_data["state"] = STATE_DELETE_CLIENT_ID
     await update.message.reply_text(
-        "📝 Введите ID клиента (см. /list_clients). Для отмены: /cancel"
+        "📝 Введите ID клиента (см. /list_clients). Для отмены: /cancel",
+        reply_markup=main_reply_keyboard(),
     )
 
 
@@ -782,7 +838,8 @@ async def disable_client_handler(update: Update, context: ContextTypes.DEFAULT_T
         return
     context.user_data["state"] = STATE_DISABLE_CLIENT_TARGET
     await update.message.reply_text(
-        "📝 Введите ID или имя клиента. Для отмены: /cancel"
+        "📝 Введите ID или имя клиента. Для отмены: /cancel",
+        reply_markup=main_reply_keyboard(),
     )
 
 
@@ -794,7 +851,8 @@ async def enable_client_handler(update: Update, context: ContextTypes.DEFAULT_TY
         return
     context.user_data["state"] = STATE_ENABLE_CLIENT_TARGET
     await update.message.reply_text(
-        "📝 Введите ID или имя клиента. Для отмены: /cancel"
+        "📝 Введите ID или имя клиента. Для отмены: /cancel",
+        reply_markup=main_reply_keyboard(),
     )
 
 
@@ -992,6 +1050,23 @@ async def _do_enable_client_target(
     )
 
 
+# Текст кнопок ReplyKeyboard → тот же обработчик, что и у slash-команды
+REPLY_KEYBOARD_MENU_HANDLERS = {
+    BTN_LIST_CLIENTS: list_clients_handler,
+    BTN_ADD_CLIENT: add_client_handler,
+    BTN_GET_CONFIG: get_config_handler,
+    BTN_SET_EXPIRY: set_expiry_handler,
+    BTN_DISABLE: disable_client_handler,
+    BTN_ENABLE: enable_client_handler,
+    BTN_DELETE: delete_client_handler,
+    BTN_STATUS: status_handler,
+    BTN_RESTART: restart_handler,
+    BTN_HELP: help_handler,
+    BTN_CANCEL_KB: cancel_handler,
+    BTN_MAIN: start_handler,
+}
+
+
 async def interactive_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обработка текстового ввода в интерактивном режиме (имя, ID и т.д.). Отмена: отмена / cancel."""
     if not update.message or not update.message.text:
@@ -1003,13 +1078,25 @@ async def interactive_message_handler(update: Update, context: ContextTypes.DEFA
     if not text:
         return
 
+    menu_handler = REPLY_KEYBOARD_MENU_HANDLERS.get(text)
+    if menu_handler is not None:
+        # Переключение по меню сбрасывает незавершённый ввод (как выход из режима + новая команда)
+        context.user_data.pop("state", None)
+        context.user_data.pop("pending_add_client", None)
+        context.user_data.pop("pending_set_expiry", None)
+        await menu_handler(update, context)
+        return
+
     state = context.user_data.get("state")
     # Текст "отмена" или "cancel" в любом режиме — выход
     if text.lower() in CANCEL_WORDS:
         context.user_data.pop("state", None)
         context.user_data.pop("pending_add_client", None)
         context.user_data.pop("pending_set_expiry", None)
-        await update.message.reply_text("✅ Режим отменён.")
+        await update.message.reply_text(
+            "✅ Режим отменён.",
+            reply_markup=main_reply_keyboard(),
+        )
         return
     if not state:
         return
@@ -1034,7 +1121,7 @@ async def interactive_message_handler(update: Update, context: ContextTypes.DEFA
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик кнопок: подтверждение удаления по client_id."""
+    """Обработчик inline-кнопок: удаление клиента, перезапуск VPN."""
     query = update.callback_query
     await query.answer()
 
@@ -1069,3 +1156,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     elif query.data == "delete_no":
         await query.edit_message_text("❌ Удаление отменено")
+
+    elif query.data == "restart_yes":
+        await query.edit_message_text("🔄 Применяю изменения конфигурации VPN…")
+        success, message = restart_vpn(DOCKER_COMPOSE_DIR, AWG_CONFIG_DIR)
+        if success:
+            await query.edit_message_text(f"✅ {message}")
+        else:
+            await query.edit_message_text(f"⚠️ {message}")
+
+    elif query.data == "restart_no":
+        await query.edit_message_text("❌ Перезапуск отменён")
