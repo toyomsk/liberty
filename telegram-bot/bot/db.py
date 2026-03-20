@@ -17,7 +17,9 @@ CREATE TABLE IF NOT EXISTS clients (
     xray_uuid TEXT,
     hysteria_password TEXT,
     -- Unix epoch seconds (UTC). NULL means "enabled".
-    disabled_at INTEGER
+    disabled_at INTEGER,
+    -- Unix epoch seconds (UTC) when "expires in 24h" notice was sent to admins.
+    expiry_notice_sent_at INTEGER
 );
 """
 
@@ -37,11 +39,17 @@ def _ensure_migration(conn: sqlite3.Connection) -> None:
     if "disabled_at" not in cols:
         conn.execute("ALTER TABLE clients ADD COLUMN disabled_at INTEGER")
         conn.commit()
+    if "expiry_notice_sent_at" not in cols:
+        conn.execute("ALTER TABLE clients ADD COLUMN expiry_notice_sent_at INTEGER")
+        conn.commit()
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_clients_expires_at ON clients(expires_at)"
     )
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_clients_disabled_at ON clients(disabled_at)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_clients_notice_sent ON clients(expiry_notice_sent_at)"
     )
     conn.commit()
 
@@ -67,16 +75,25 @@ def add_client(
     xray_uuid: Optional[str] = None,
     hysteria_password: Optional[str] = None,
     disabled_at: Optional[int] = None,
+    expiry_notice_sent_at: Optional[int] = None,
 ) -> None:
     """Insert client (id, name, optional expiry)."""
     conn = sqlite3.connect(db_path)
     try:
         conn.execute(
             """
-            INSERT INTO clients (id, name, expires_at, xray_uuid, hysteria_password, disabled_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO clients (id, name, expires_at, xray_uuid, hysteria_password, disabled_at, expiry_notice_sent_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (client_id, name, expires_at, xray_uuid, hysteria_password, disabled_at),
+            (
+                client_id,
+                name,
+                expires_at,
+                xray_uuid,
+                hysteria_password,
+                disabled_at,
+                expiry_notice_sent_at,
+            ),
         )
         conn.commit()
     finally:
@@ -185,7 +202,7 @@ def set_expires_at(
     conn = sqlite3.connect(db_path)
     try:
         r = conn.execute(
-            "UPDATE clients SET expires_at = ? WHERE id = ?",
+            "UPDATE clients SET expires_at = ?, expiry_notice_sent_at = NULL WHERE id = ?",
             (expires_at, client_id),
         )
         conn.commit()
@@ -222,8 +239,55 @@ def set_expires_at_and_disabled_at(
     conn = sqlite3.connect(db_path)
     try:
         r = conn.execute(
-            "UPDATE clients SET expires_at = ?, disabled_at = ? WHERE id = ?",
+            "UPDATE clients SET expires_at = ?, disabled_at = ?, expiry_notice_sent_at = NULL WHERE id = ?",
             (expires_at, disabled_at, client_id),
+        )
+        conn.commit()
+        return r.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_clients_expiring_within_window(
+    now_ts: int,
+    until_ts: int,
+    db_path: str,
+) -> List[Tuple[str, str, int]]:
+    """
+    Return clients that expire in (now_ts, until_ts] and are not disabled,
+    and haven't been notified yet for current expiry.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, name, expires_at
+            FROM clients
+            WHERE expires_at IS NOT NULL
+              AND expires_at > ?
+              AND expires_at <= ?
+              AND disabled_at IS NULL
+              AND (expiry_notice_sent_at IS NULL OR expiry_notice_sent_at < expires_at)
+            ORDER BY expires_at
+            """,
+            (now_ts, until_ts),
+        ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+    finally:
+        conn.close()
+
+
+def set_expiry_notice_sent_at(
+    client_id: str,
+    sent_at_ts: int,
+    db_path: str,
+) -> bool:
+    """Mark that expiry warning has been sent."""
+    conn = sqlite3.connect(db_path)
+    try:
+        r = conn.execute(
+            "UPDATE clients SET expiry_notice_sent_at = ? WHERE id = ?",
+            (sent_at_ts, client_id),
         )
         conn.commit()
         return r.rowcount > 0
