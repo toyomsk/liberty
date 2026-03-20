@@ -341,18 +341,41 @@ async def _do_get_config(update: Update, context: ContextTypes.DEFAULT_TYPE, arg
                         caption=f"📱 QR\\-код Hysteria2 для `{escape_markdown_v2(name)}`",
                         parse_mode=ParseMode.MARKDOWN_V2,
                     )
-        if MTPROXY_READY and client_id and mtproxy_manager.has_mtproxy_user(client_id):
-            ok_mt, mt_link = mtproxy_manager.get_link_plain(client_id)
-            if ok_mt:
-                await update.message.reply_text(
-                    f"🔗 *MTProto \\(mtg\\):* `{escape_markdown_v2(name)}`\n`{escape_markdown_v2(mt_link)}`",
-                    parse_mode=ParseMode.MARKDOWN_V2,
-                )
-                mt_qr = generate_qr_code(mt_link)
-                if mt_qr:
-                    await update.message.reply_photo(
-                        photo=mt_qr,
-                        caption=f"📱 QR MTProto для `{escape_markdown_v2(name)}`",
+        if MTPROXY_READY and client_id:
+            if mtproxy_manager.has_mtproxy_user(client_id):
+                ok_mt, mt_link = mtproxy_manager.get_link_plain(client_id)
+                if ok_mt:
+                    await update.message.reply_text(
+                        f"🔗 *MTProto \\(mtg\\):* `{escape_markdown_v2(name)}`\n`{escape_markdown_v2(mt_link)}`",
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
+                    mt_qr = generate_qr_code(mt_link)
+                    if mt_qr:
+                        await update.message.reply_photo(
+                            photo=mt_qr,
+                            caption=f"📱 QR MTProto для `{escape_markdown_v2(name)}`",
+                            parse_mode=ParseMode.MARKDOWN_V2,
+                        )
+            else:
+                # Клиент мог существовать до включения MTProto.
+                # Делаем on-demand создание mtg-контейнера и выдаём ссылку.
+                mt_ok, mt_or_err = mtproxy_manager.create_for_client(client_id)
+                if mt_ok:
+                    await update.message.reply_text(
+                        f"🔗 *MTProto \\(mtg\\):* `{escape_markdown_v2(name)}`\n`{escape_markdown_v2(mt_or_err)}`",
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                    )
+                    mt_qr = generate_qr_code(mt_or_err)
+                    if mt_qr:
+                        await update.message.reply_photo(
+                            photo=mt_qr,
+                            caption=f"📱 QR MTProto для `{escape_markdown_v2(name)}`",
+                            parse_mode=ParseMode.MARKDOWN_V2,
+                        )
+                else:
+                    logger.warning("MTProto auto-create failed for %s: %s", client_id, mt_or_err)
+                    await update.message.reply_text(
+                        "⚠️ MTProto \\(mtg\\) для этого клиента не создан — см\\. логи бота",
                         parse_mode=ParseMode.MARKDOWN_V2,
                     )
     except Exception as e:
