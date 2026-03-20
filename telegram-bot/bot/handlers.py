@@ -246,7 +246,7 @@ async def _do_add_client(update: Update, context: ContextTypes.DEFAULT_TYPE, dis
             html_href = _escape_html_attr(mtproxy_link)
             await update.message.reply_text(
                 f"🔗 <b>MTProto (mtg):</b> <code>{_escape_html(internal_name)}</code>\n"
-                f'<a href="{html_href}">Открыть MTProto</a>',
+                f'<a href="{html_href}">Добавить MTProxy в Telegram</a>',
                 parse_mode=ParseMode.HTML,
             )
             mt_qr = generate_qr_code(mtproxy_link)
@@ -360,7 +360,7 @@ async def _do_get_config(update: Update, context: ContextTypes.DEFAULT_TYPE, arg
                     html_href = _escape_html_attr(mt_link)
                     await update.message.reply_text(
                         f"🔗 <b>MTProto (mtg):</b> <code>{_escape_html(name)}</code>\n"
-                        f'<a href="{html_href}">Открыть MTProto</a>',
+                        f'<a href="{html_href}">Добавить MTProxy в Telegram</a>',
                         parse_mode=ParseMode.HTML,
                     )
                     mt_qr = generate_qr_code(mt_link)
@@ -378,7 +378,7 @@ async def _do_get_config(update: Update, context: ContextTypes.DEFAULT_TYPE, arg
                     html_href = _escape_html_attr(mt_or_err)
                     await update.message.reply_text(
                         f"🔗 <b>MTProto (mtg):</b> <code>{_escape_html(name)}</code>\n"
-                        f'<a href="{html_href}">Открыть MTProto</a>',
+                        f'<a href="{html_href}">Добавить MTProxy в Telegram</a>',
                         parse_mode=ParseMode.HTML,
                     )
                     mt_qr = generate_qr_code(mt_or_err)
