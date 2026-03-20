@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from telegram.constants import ParseMode
+from telegram.constants import ParseMode, ChatAction
 
 # Состояния интерактивного ввода (context.user_data["state"])
 STATE_ADD_CLIENT_NAME = "add_client_name"
@@ -94,6 +94,17 @@ def _display_name(internal_name: str) -> str:
 def generate_keenetic_command() -> str:
     """Генерация команды для роутеров Keenetic."""
     return f"interface <INTERFACE> wireguard asc {AMNEZIA_JC} {AMNEZIA_JMIN} {AMNEZIA_JMAX} {AMNEZIA_S1} {AMNEZIA_S2} {AMNEZIA_H1} {AMNEZIA_H2} {AMNEZIA_H3} {AMNEZIA_H4}"
+
+
+async def _send_typing(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Send Telegram typing action to current chat."""
+    try:
+        chat = update.effective_chat
+        if chat and context and context.bot:
+            await context.bot.send_chat_action(chat_id=chat.id, action=ChatAction.TYPING)
+    except Exception:
+        # Non-critical UX helper: ignore transient Telegram/API errors.
+        pass
 
 
 async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -258,6 +269,7 @@ def _parse_hysteria_password(hysteria_link: str, client_id: str) -> Optional[str
 
 async def _do_add_client(update: Update, context: ContextTypes.DEFAULT_TYPE, display_name_arg: str) -> None:
     """Step 1 of /add_client: validate name, generate client_id, ask expiry."""
+    await _send_typing(update, context)
     if not re.match(r"^[a-zA-Z0-9_-]+$", display_name_arg):
         await update.message.reply_text(
             "❌ Имя может содержать только буквы, цифры, _ и -"
@@ -291,6 +303,7 @@ async def _do_finalize_add_client(
     expiry_text: str,
 ) -> None:
     """Step 2 of /add_client: parse expiry, create client everywhere."""
+    await _send_typing(update, context)
     pending = context.user_data.get("pending_add_client") or {}
     client_id = pending.get("client_id")
     internal_name = pending.get("internal_name")
@@ -490,6 +503,7 @@ async def add_client_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def _do_get_config(update: Update, context: ContextTypes.DEFAULT_TYPE, arg: str) -> None:
     """Общая логика получения конфига по ID или имени."""
+    await _send_typing(update, context)
     name = db_get_name_by_id(arg, DB_PATH)
     client_id = arg if name else None
     if not name:
@@ -668,6 +682,7 @@ async def list_clients_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     if not is_admin(user_id):
         await update.message.reply_text("❌ Недостаточно прав")
         return
+    await _send_typing(update, context)
 
     rows = db_list_clients(DB_PATH)
     if not rows:
@@ -701,6 +716,7 @@ async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not is_admin(user_id):
         await update.message.reply_text("❌ Недостаточно прав")
         return
+    await _send_typing(update, context)
 
     status = get_server_status(DOCKER_COMPOSE_DIR, AWG_CONFIG_DIR)
     await update.message.reply_text(status, parse_mode=ParseMode.MARKDOWN_V2)
@@ -713,6 +729,7 @@ async def restart_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     if not is_admin(user_id):
         await update.message.reply_text("❌ Недостаточно прав")
         return
+    await _send_typing(update, context)
 
     await update.message.reply_text(
         "🔄 Применяю изменения конфигурации VPN\\.\\.\\.",
@@ -724,6 +741,7 @@ async def restart_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def _do_delete_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE, client_id: str) -> None:
     """Показать подтверждение удаления по client_id."""
+    await _send_typing(update, context)
     name = db_get_name_by_id(client_id, DB_PATH)
     if not name:
         await update.message.reply_text(
@@ -782,6 +800,7 @@ async def enable_client_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def _do_set_expiry_client(update: Update, context: ContextTypes.DEFAULT_TYPE, arg: str) -> None:
     """Resolve client by ID or name, then ask for the new expiry."""
+    await _send_typing(update, context)
     name = db_get_name_by_id(arg, DB_PATH)
     client_id = arg if name else None
     internal_name = None
@@ -814,6 +833,7 @@ async def _do_set_expiry_client(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def _do_set_expiry_value(update: Update, context: ContextTypes.DEFAULT_TYPE, expiry_text: str) -> None:
+    await _send_typing(update, context)
     pending = context.user_data.get("pending_set_expiry") or {}
     client_id = pending.get("client_id")
     internal_name = pending.get("internal_name")
@@ -884,6 +904,7 @@ async def _do_disable_client_target(
     context: ContextTypes.DEFAULT_TYPE,
     arg: str,
 ) -> None:
+    await _send_typing(update, context)
     name = db_get_name_by_id(arg, DB_PATH)
     client_id = arg if name else None
     internal_name = None
@@ -925,6 +946,7 @@ async def _do_enable_client_target(
     context: ContextTypes.DEFAULT_TYPE,
     arg: str,
 ) -> None:
+    await _send_typing(update, context)
     name = db_get_name_by_id(arg, DB_PATH)
     client_id = arg if name else None
     internal_name = None
