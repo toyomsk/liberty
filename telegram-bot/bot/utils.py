@@ -288,6 +288,27 @@ def get_server_status(docker_compose_dir: str, vpn_config_dir: str) -> str:
                     hysteria_docker_status = out
         except Exception as e:
             logger.error("Ошибка проверки статуса Hysteria: %s", e)
+
+        # Статус MTProxy-контейнеров (mtproto-proxy-*)
+        mtproxy_docker_status = "Контейнеры не запущены"
+        mtproxy_running_count = 0
+        try:
+            result = subprocess.run(
+                ['docker', 'ps', '--filter', 'name=mtproto-proxy-', '--format', 'table {{.Names}}\t{{.Status}}'],
+                capture_output=True,
+                text=True,
+                cwd=docker_compose_dir,
+                timeout=5
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                out = result.stdout.strip()
+                lines = out.splitlines()
+                # table output includes header when there are matches
+                if len(lines) > 1:
+                    mtproxy_running_count = len(lines) - 1
+                    mtproxy_docker_status = out
+        except Exception as e:
+            logger.error("Ошибка проверки статуса MTProxy: %s", e)
         
         # WireGuard статус (только в контейнере)
         wg_info = "WireGuard интерфейс не активен"
@@ -315,6 +336,8 @@ def get_server_status(docker_compose_dir: str, vpn_config_dir: str) -> str:
         escaped_docker_status = escape_markdown_v2(docker_status)
         escaped_xray_status = escape_markdown_v2(xray_docker_status)
         escaped_hysteria_status = escape_markdown_v2(hysteria_docker_status)
+        escaped_mtproxy_status = escape_markdown_v2(mtproxy_docker_status)
+        escaped_mtproxy_count = escape_markdown_v2(str(mtproxy_running_count))
         status = f"""🖥 *Статус сервера:*
 
 📦 *Docker \\(WG\\):*
@@ -333,6 +356,11 @@ def get_server_status(docker_compose_dir: str, vpn_config_dir: str) -> str:
 📡 *Docker \\(Hysteria2\\):*
 ```
 {escaped_hysteria_status}
+```
+
+📡 *Docker \\(MTProxy\\):* \\(запущено: `{escaped_mtproxy_count}`\\)
+```
+{escaped_mtproxy_status}
 ```
 
 🌐 *Внешний IP:* `{escaped_external_ip}`

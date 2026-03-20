@@ -807,7 +807,7 @@ async def _do_set_expiry_client(update: Update, context: ContextTypes.DEFAULT_TY
 
     display = _display_name(name)
     await update.message.reply_text(
-        f"🗓 Новый срок для *{escape_markdown_v2(display)}* \\(ID: `{escape_markdown_v2(client_id)}`\\):\n"
+        f"🗓 Новый срок для <b>{_escape_html(display)}</b> (ID: <code>{_escape_html(client_id)}</code>):\n"
         "Примеры: <code>30d</code>, <code>12h</code>, <code>2026-03-20</code> (UTC), <code>@1700000000</code>, или <code>none</code>.",
         parse_mode=ParseMode.HTML,
     )
