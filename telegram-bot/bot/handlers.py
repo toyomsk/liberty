@@ -58,14 +58,14 @@ from bot import xray_manager, hysteria_manager, mtproxy_manager
 logger = logging.getLogger(__name__)
 
 
-def _extract_mtproxy_secret_from_tg_url(tg_url: str) -> str:
-    """Extract secret=... from tg://proxy URL for nice button text."""
-    if not tg_url:
-        return ""
-    m = re.search(r"secret=([^&]+)", tg_url)
-    if not m:
-        return tg_url
-    return m.group(1)
+def _escape_html(text: str) -> str:
+    return (
+        text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )
+
+
+def _escape_html_attr(text: str) -> str:
+    return _escape_html(text).replace('"', "&quot;")
 
 
 def _display_name(internal_name: str) -> str:
@@ -243,14 +243,11 @@ async def _do_add_client(update: Update, context: ContextTypes.DEFAULT_TYPE, dis
                     parse_mode=ParseMode.MARKDOWN_V2,
                 )
         if mtproxy_link:
-            mt_secret_text = _extract_mtproxy_secret_from_tg_url(mtproxy_link)
-            keyboard = InlineKeyboardMarkup(
-                [[InlineKeyboardButton(mt_secret_text, url=mtproxy_link)]]
-            )
+            html_href = _escape_html_attr(mtproxy_link)
             await update.message.reply_text(
-                f"🔗 *MTProto \\(mtg\\):* `{escape_markdown_v2(internal_name)}`",
-                reply_markup=keyboard,
-                parse_mode=ParseMode.MARKDOWN_V2,
+                f"🔗 <b>MTProto (mtg):</b> <code>{_escape_html(internal_name)}</code>\n"
+                f'<a href="{html_href}">Открыть MTProto</a>',
+                parse_mode=ParseMode.HTML,
             )
             mt_qr = generate_qr_code(mtproxy_link)
             if mt_qr:
@@ -360,14 +357,11 @@ async def _do_get_config(update: Update, context: ContextTypes.DEFAULT_TYPE, arg
             if mtproxy_manager.has_mtproxy_user(client_id):
                 ok_mt, mt_link = mtproxy_manager.get_link_plain(client_id)
                 if ok_mt:
-                    mt_secret_text = _extract_mtproxy_secret_from_tg_url(mt_link)
-                    keyboard = InlineKeyboardMarkup(
-                        [[InlineKeyboardButton(mt_secret_text, url=mt_link)]]
-                    )
+                    html_href = _escape_html_attr(mt_link)
                     await update.message.reply_text(
-                        f"🔗 *MTProto \\(mtg\\):* `{escape_markdown_v2(name)}`",
-                        reply_markup=keyboard,
-                        parse_mode=ParseMode.MARKDOWN_V2,
+                        f"🔗 <b>MTProto (mtg):</b> <code>{_escape_html(name)}</code>\n"
+                        f'<a href="{html_href}">Открыть MTProto</a>',
+                        parse_mode=ParseMode.HTML,
                     )
                     mt_qr = generate_qr_code(mt_link)
                     if mt_qr:
@@ -381,14 +375,11 @@ async def _do_get_config(update: Update, context: ContextTypes.DEFAULT_TYPE, arg
                 # Делаем on-demand создание mtg-контейнера и выдаём ссылку.
                 mt_ok, mt_or_err = mtproxy_manager.create_for_client(client_id)
                 if mt_ok:
-                    mt_secret_text = _extract_mtproxy_secret_from_tg_url(mt_or_err)
-                    keyboard = InlineKeyboardMarkup(
-                        [[InlineKeyboardButton(mt_secret_text, url=mt_or_err)]]
-                    )
+                    html_href = _escape_html_attr(mt_or_err)
                     await update.message.reply_text(
-                        f"🔗 *MTProto \\(mtg\\):* `{escape_markdown_v2(name)}`",
-                        reply_markup=keyboard,
-                        parse_mode=ParseMode.MARKDOWN_V2,
+                        f"🔗 <b>MTProto (mtg):</b> <code>{_escape_html(name)}</code>\n"
+                        f'<a href="{html_href}">Открыть MTProto</a>',
+                        parse_mode=ParseMode.HTML,
                     )
                     mt_qr = generate_qr_code(mt_or_err)
                     if mt_qr:
