@@ -34,15 +34,15 @@ CLIENT_LIST_FILTER_KEY = "client_list_filter"
 CANCEL_WORDS = ("отмена", "cancel")
 
 # ReplyKeyboard: подписи должны совпадать с текстом кнопки символ в символ.
-BTN_LIST_CLIENTS = "📋 Список клиентов"
-BTN_ADD_CLIENT = "➕ Создать клиента"
-BTN_GET_CONFIG = "📥 Получить конфиг"
-BTN_SET_EXPIRY = "🗓 Изменить срок"
-BTN_DISABLE = "⏸ Отключить клиента"
-BTN_ENABLE = "▶️ Включить клиента"
-BTN_DELETE = "🗑 Удалить клиента"
-BTN_STATUS = "📊 Статус сервера"
-BTN_RESTART = "🔄 Перезапуск VPN"
+BTN_LIST_CLIENTS = "Список клиентов"
+BTN_ADD_CLIENT = "Создать клиента"
+BTN_GET_CONFIG = "Получить конфиг"
+BTN_SET_EXPIRY = "Изменить срок"
+BTN_DISABLE = "Отключить клиента"
+BTN_ENABLE = "Включить клиента"
+BTN_DELETE = "Удалить клиента"
+BTN_STATUS = "Статус сервера"
+BTN_RESTART = "Перезапуск VPN"
 
 
 def main_reply_keyboard() -> ReplyKeyboardMarkup:
