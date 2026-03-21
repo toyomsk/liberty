@@ -161,14 +161,63 @@ def get_id_by_name(name: str, db_path: str) -> Optional[str]:
         conn.close()
 
 
-def list_clients(db_path: str) -> List[Tuple[str, str, Optional[int]]]:
-    """Return list of (client_id, name, expires_at) for display."""
+def list_clients(db_path: str) -> List[Tuple[str, str, Optional[int], Optional[int]]]:
+    """Return list of (client_id, name, expires_at, disabled_at) for display."""
     conn = sqlite3.connect(db_path)
     try:
         rows = conn.execute(
-            "SELECT id, name, expires_at FROM clients ORDER BY created_at"
+            "SELECT id, name, expires_at, disabled_at FROM clients ORDER BY created_at"
         ).fetchall()
-        return [(r[0], r[1], r[2]) for r in rows]
+        return [(r[0], r[1], r[2], r[3]) for r in rows]
+    finally:
+        conn.close()
+
+
+def _search_where_clause(search: Optional[str]) -> Tuple[str, Tuple[str, ...]]:
+    """Подстрока по ID или имени (фильтр в SQL, не в Python)."""
+    if search is None or not str(search).strip():
+        return "", ()
+    q = str(search).strip().lower()
+    return (
+        "WHERE instr(lower(id), ?) > 0 OR instr(lower(name), ?) > 0",
+        (q, q),
+    )
+
+
+def count_clients(db_path: str, search: Optional[str] = None) -> int:
+    """Число клиентов; при search — только подходящие под подстроку."""
+    where, params = _search_where_clause(search)
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            f"SELECT COUNT(*) FROM clients {where}",
+            params,
+        ).fetchone()
+        return int(row[0]) if row else 0
+    finally:
+        conn.close()
+
+
+def list_clients_page(
+    db_path: str,
+    offset: int,
+    limit: int,
+    search: Optional[str] = None,
+) -> List[Tuple[str, str, Optional[int], Optional[int]]]:
+    """Страница (id, name, expires_at, disabled_at); search — подстрока ID или имени."""
+    where, params = _search_where_clause(search)
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT id, name, expires_at, disabled_at FROM clients
+            {where}
+            ORDER BY created_at
+            LIMIT ? OFFSET ?
+            """,
+            (*params, limit, offset),
+        ).fetchall()
+        return [(r[0], r[1], r[2], r[3]) for r in rows]
     finally:
         conn.close()
 

@@ -15,6 +15,7 @@ from telegram import (
 )
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode, ChatAction
+from telegram.error import BadRequest
 
 # Состояния интерактивного ввода (context.user_data["state"])
 STATE_ADD_CLIENT_NAME = "add_client_name"
@@ -25,6 +26,10 @@ STATE_DISABLE_CLIENT_TARGET = "disable_client_target"
 STATE_ENABLE_CLIENT_TARGET = "enable_client_target"
 STATE_GET_CONFIG_ARG = "get_config_arg"
 STATE_DELETE_CLIENT_ID = "delete_client_id"
+STATE_LIST_SEARCH = "client_list_search"
+
+# Активный фильтр списка клиентов (подстрока ID/имени); None = все
+CLIENT_LIST_FILTER_KEY = "client_list_filter"
 
 CANCEL_WORDS = ("отмена", "cancel")
 
@@ -38,9 +43,6 @@ BTN_ENABLE = "▶️ Включить клиента"
 BTN_DELETE = "🗑 Удалить клиента"
 BTN_STATUS = "📊 Статус сервера"
 BTN_RESTART = "🔄 Перезапуск VPN"
-BTN_HELP = "❓ Справка"
-BTN_CANCEL_KB = "❌ Отмена ввода"
-BTN_MAIN = "🏠 Главное меню"
 
 
 def main_reply_keyboard() -> ReplyKeyboardMarkup:
@@ -50,7 +52,6 @@ def main_reply_keyboard() -> ReplyKeyboardMarkup:
             [BTN_LIST_CLIENTS, BTN_ADD_CLIENT, BTN_GET_CONFIG],
             [BTN_SET_EXPIRY, BTN_DISABLE, BTN_ENABLE],
             [BTN_DELETE, BTN_STATUS, BTN_RESTART],
-            [BTN_HELP, BTN_CANCEL_KB, BTN_MAIN],
         ],
         resize_keyboard=True,
     )
@@ -85,7 +86,8 @@ from bot.db import (
     get_name_by_id as db_get_name_by_id,
     get_id_by_name as db_get_id_by_name,
     get_client_details_by_id as db_get_client_details_by_id,
-    list_clients as db_list_clients,
+    count_clients as db_count_clients,
+    list_clients_page as db_list_clients_page,
     delete_client as db_delete_client,
     set_expires_at_and_disabled_at as db_set_expires_at_and_disabled_at,
     set_xray_uuid as db_set_xray_uuid,
@@ -149,9 +151,9 @@ async def start_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 
     welcome_text = """🎛 <b>Liberty Bot</b>
 
-Команды доступны кнопками внизу или через slash (интерактивный ввод, отмена: /cancel или «❌ Отмена ввода»):
+Команды доступны кнопками внизу или через slash (интерактивный ввод, отмена: /cancel или текст «отмена» / «cancel»):
 /add_client — Создать клиента (далее ввод имени + срок действия)
-/list_clients — Список клиентов (ID и имя)
+/list_clients — Список клиентов (ID, имя, активен/неактивен, срок)
 /get_config — Получить конфиг (далее ID или имя)
 /delete_client — Удалить клиента (далее ID из списка)
 /set_expiry — Изменить срок действия клиента (далее ID/имя + новый срок)
@@ -194,6 +196,137 @@ def _format_expires_at(expires_at: Optional[int]) -> str:
         return "∞"
     dt = datetime.fromtimestamp(expires_at, tz=timezone.utc)
     return dt.strftime("%Y-%m-%d")
+
+
+def _client_is_active(
+    expires_at: Optional[int],
+    disabled_at: Optional[int],
+    now_ts: Optional[int] = None,
+) -> bool:
+    """Клиент считается активным, если не отключён вручную и срок не истёк."""
+    if now_ts is None:
+        now_ts = int(time.time())
+    if disabled_at is not None:
+        return False
+    if expires_at is not None and expires_at <= now_ts:
+        return False
+    return True
+
+
+def _client_list_status_label(
+    expires_at: Optional[int],
+    disabled_at: Optional[int],
+    now_ts: int,
+) -> str:
+    """Краткая строка для списка: активен / отключён / истёк срок."""
+    if _client_is_active(expires_at, disabled_at, now_ts):
+        return "✅ активен"
+    if disabled_at is not None:
+        return "⏸ неактивен · отключён"
+    return "⌛ неактивен · срок истёк"
+
+
+# Ограничиваем размер страницы, чтобы не упираться в лимит 4096 символов и Markdown V2.
+CLIENT_LIST_PAGE_SIZE = 15
+
+
+def _normalize_list_search(search: Optional[str]) -> Optional[str]:
+    if search is None:
+        return None
+    s = str(search).strip()
+    return s if s else None
+
+
+def _client_list_inline_keyboard(
+    page: int,
+    total_pages: int,
+    filter_active: bool,
+) -> InlineKeyboardMarkup:
+    """Навигация по страницам + поиск + сброс фильтра."""
+    rows: list[list[InlineKeyboardButton]] = []
+    if total_pages > 1:
+        nav: list[InlineKeyboardButton] = []
+        if page > 0:
+            nav.append(
+                InlineKeyboardButton("« Назад", callback_data=f"list_page_{page - 1}")
+            )
+        if page < total_pages - 1:
+            nav.append(
+                InlineKeyboardButton("Вперёд »", callback_data=f"list_page_{page + 1}")
+            )
+        rows.append(nav)
+    row2 = [InlineKeyboardButton("🔍 Поиск", callback_data="list_search")]
+    if filter_active:
+        row2.append(InlineKeyboardButton("✖ Сброс", callback_data="list_filter_clear"))
+    rows.append(row2)
+    return InlineKeyboardMarkup(rows)
+
+
+def _client_list_build_page(
+    page: int,
+    search: Optional[str],
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Одна страница из SQL: count + LIMIT/OFFSET; search — подстрока ID или имени."""
+    sq = _normalize_list_search(search)
+    total = db_count_clients(DB_PATH, sq)
+
+    if total == 0:
+        if sq:
+            result = (
+                "🔎 *По запросу* "
+                f"`{escape_markdown_v2(sq)}`"
+                " *ничего не найдено\\.*"
+            )
+        else:
+            result = "👥 *Клиенты не найдены*"
+        return result, _client_list_inline_keyboard(0, 1, bool(sq))
+
+    page_size = CLIENT_LIST_PAGE_SIZE
+    total_pages = (total + page_size - 1) // page_size
+    page = max(0, min(page, total_pages - 1))
+    offset = page * page_size
+    chunk = db_list_clients_page(DB_PATH, offset, page_size, sq)
+
+    escaped_total = escape_markdown_v2(str(total))
+    ep = escape_markdown_v2(str(page + 1))
+    etp = escape_markdown_v2(str(total_pages))
+    result = f"👥 *Список клиентов* \\(всего: {escaped_total}\\)\n"
+    if sq:
+        result += f"🔎 *Фильтр:* `{escape_markdown_v2(sq)}`\n"
+    result += f"📄 Стр\\. *{ep}* из *{etp}*\n"
+    result += "ℹ️ *✅* активен · *⏸* отключён · *⌛* истёк срок\n\n"
+
+    now_ts = int(time.time())
+    for j, (cid, internal_name, expires_at, disabled_at) in enumerate(chunk):
+        idx = offset + j + 1
+        display = _display_name(internal_name)
+        status_txt = _client_list_status_label(expires_at, disabled_at, now_ts)
+        result += (
+            f"*{escape_markdown_v2(str(idx))}\\.* `{escape_markdown_v2(cid)}` — "
+            f"*{escape_markdown_v2(display)}* — *{escape_markdown_v2(status_txt)}*"
+        )
+        if expires_at is not None:
+            result += f" \\(до *{escape_markdown_v2(_format_expires_at(expires_at))}*\\)"
+        else:
+            result += " \\(∞\\)"
+        result += "\n"
+        if j < len(chunk) - 1:
+            result += "\n"
+
+    return result, _client_list_inline_keyboard(page, total_pages, bool(sq))
+
+
+async def _reply_client_list_page(
+    update: Update,
+    page: int,
+    search: Optional[str],
+) -> None:
+    text, kb = _client_list_build_page(page, search)
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=kb,
+    )
 
 
 def _parse_expiry_input(text: str) -> Optional[int]:
@@ -718,7 +851,7 @@ async def set_expiry_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def list_clients_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Список клиентов из БД: ID и отображаемое имя."""
+    """Список клиентов из БД: ID и отображаемое имя (SQL, страницы, поиск)."""
     user_id = update.effective_user.id
 
     if not is_admin(user_id):
@@ -726,36 +859,8 @@ async def list_clients_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
     await _send_typing(update, context)
 
-    rows = db_list_clients(DB_PATH)
-    if not rows:
-        await update.message.reply_text(
-            "👥 Клиенты не найдены",
-            reply_markup=main_reply_keyboard(),
-        )
-        return
-
-    total = len(rows)
-    escaped_total = escape_markdown_v2(str(total))
-    result = f"👥 *Список клиентов* \\(всего: {escaped_total}\\)\n\n"
-    for i, (cid, internal_name, expires_at) in enumerate(rows, 1):
-        display = _display_name(internal_name)
-        result += (
-            f"*{escape_markdown_v2(str(i))}\\.* `{escape_markdown_v2(cid)}` — "
-            f"*{escape_markdown_v2(display)}*"
-        )
-        if expires_at is not None:
-            result += f" \\(до *{escape_markdown_v2(_format_expires_at(expires_at))}*\\)"
-        else:
-            result += " \\(∞\\)"
-        result += "\n"
-        if i < total:
-            result += "\n"
-
-    await update.message.reply_text(
-        result,
-        parse_mode=ParseMode.MARKDOWN_V2,
-        reply_markup=main_reply_keyboard(),
-    )
+    context.user_data.pop(CLIENT_LIST_FILTER_KEY, None)
+    await _reply_client_list_page(update, 0, None)
 
 
 async def status_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1061,9 +1166,6 @@ REPLY_KEYBOARD_MENU_HANDLERS = {
     BTN_DELETE: delete_client_handler,
     BTN_STATUS: status_handler,
     BTN_RESTART: restart_handler,
-    BTN_HELP: help_handler,
-    BTN_CANCEL_KB: cancel_handler,
-    BTN_MAIN: start_handler,
 }
 
 
@@ -1074,8 +1176,9 @@ async def interactive_message_handler(update: Update, context: ContextTypes.DEFA
     user_id = update.effective_user.id
     if not is_admin(user_id):
         return
-    text = update.message.text.strip()
-    if not text:
+    st0 = context.user_data.get("state")
+    text = (update.message.text or "").strip()
+    if not text and st0 != STATE_LIST_SEARCH:
         return
 
     menu_handler = REPLY_KEYBOARD_MENU_HANDLERS.get(text)
@@ -1084,6 +1187,8 @@ async def interactive_message_handler(update: Update, context: ContextTypes.DEFA
         context.user_data.pop("state", None)
         context.user_data.pop("pending_add_client", None)
         context.user_data.pop("pending_set_expiry", None)
+        if text != BTN_LIST_CLIENTS:
+            context.user_data.pop(CLIENT_LIST_FILTER_KEY, None)
         await menu_handler(update, context)
         return
 
@@ -1118,16 +1223,68 @@ async def interactive_message_handler(update: Update, context: ContextTypes.DEFA
         await _do_get_config(update, context, text)
     elif state == STATE_DELETE_CLIENT_ID:
         await _do_delete_confirm(update, context, text)
+    elif state == STATE_LIST_SEARCH:
+        q = _normalize_list_search(text)
+        if q is None:
+            context.user_data.pop(CLIENT_LIST_FILTER_KEY, None)
+        else:
+            context.user_data[CLIENT_LIST_FILTER_KEY] = q
+        await _reply_client_list_page(update, 0, q)
+        return
 
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик inline-кнопок: удаление клиента, перезапуск VPN."""
+    """Обработчик inline-кнопок: список клиентов (страницы), удаление, перезапуск VPN."""
     query = update.callback_query
     await query.answer()
 
     user_id = query.from_user.id
     if not is_admin(user_id):
         await query.edit_message_text("❌ Недостаточно прав")
+        return
+
+    if query.data.startswith("list_page_"):
+        try:
+            page = int(query.data[len("list_page_") :])
+        except ValueError:
+            await query.edit_message_text("❌ Неверная страница")
+            return
+        search = context.user_data.get(CLIENT_LIST_FILTER_KEY)
+        text, inline_kb = _client_list_build_page(page, search)
+        try:
+            await query.edit_message_text(
+                text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=inline_kb,
+            )
+        except BadRequest as e:
+            if "message is not modified" in str(e).lower():
+                return
+            raise
+        return
+
+    if query.data == "list_search":
+        context.user_data["state"] = STATE_LIST_SEARCH
+        await query.message.reply_text(
+            "🔍 Введите подстроку для поиска по ID или имени клиента в БД.\n"
+            "Пустое сообщение — показать всех записей. Отмена: отмена / cancel",
+            reply_markup=main_reply_keyboard(),
+        )
+        return
+
+    if query.data == "list_filter_clear":
+        context.user_data.pop(CLIENT_LIST_FILTER_KEY, None)
+        text, inline_kb = _client_list_build_page(0, None)
+        try:
+            await query.edit_message_text(
+                text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=inline_kb,
+            )
+        except BadRequest as e:
+            if "message is not modified" in str(e).lower():
+                return
+            raise
         return
 
     if query.data.startswith("delete_yes_"):
