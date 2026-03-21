@@ -1,6 +1,8 @@
 import logging
 import time
+from datetime import datetime
 from typing import List, Optional, Tuple
+from zoneinfo import ZoneInfo
 from urllib.parse import unquote
 
 from config.settings import (
@@ -27,6 +29,8 @@ from bot.db import (
 from bot.utils import restart_vpn
 
 logger = logging.getLogger(__name__)
+
+MSK_TZ = ZoneInfo("Europe/Moscow")
 
 
 def _parse_vless_uuid(vless_link: str) -> Optional[str]:
@@ -275,7 +279,7 @@ async def notify_expiring_clients(context) -> None:
             f"⏰ Клиент истечет через < 24ч\n"
             f"ID: <code>{client_id}</code>\n"
             f"Имя: <code>{client_name}</code>\n"
-            f"Истекает (UTC): <code>{time.strftime('%Y-%m-%d %H:%M:%S', time.gmtime(expires_at))}</code>"
+            f"Истекает (MSK): <code>{datetime.fromtimestamp(expires_at, tz=MSK_TZ).strftime('%d.%m.%Y %H:%M:%S')}</code>"
         )
 
         sent_ok = False

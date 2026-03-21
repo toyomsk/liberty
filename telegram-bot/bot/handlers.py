@@ -7,6 +7,9 @@ import logging
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+MSK_TZ = ZoneInfo("Europe/Moscow")
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -194,8 +197,8 @@ async def cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 def _format_expires_at(expires_at: Optional[int]) -> str:
     if expires_at is None:
         return "∞"
-    dt = datetime.fromtimestamp(expires_at, tz=timezone.utc)
-    return dt.strftime("%Y-%m-%d")
+    dt = datetime.fromtimestamp(expires_at, tz=MSK_TZ)
+    return dt.strftime("%d.%m.%Y")
 
 
 def _client_is_active(
@@ -332,13 +335,13 @@ async def _reply_client_list_page(
 def _parse_expiry_input(text: str) -> Optional[int]:
     """
     expiry input formats:
-      - `none` / `∞` / `never` => no expiry
+      - `бессрочно` / `∞` / `never` / `none` (совместимость) => no expiry
       - `30d`, `12h`, `15m`, `90s`, `2w`, `1y`
-      - `YYYY-MM-DD` (UTC, expires at 23:59:59)
+      - `ДД.ММ.ГГГГ` (напр. `20.03.2026`, MSK, до 23:59:59)
+      - `YYYY-MM-DD` (совместимость, конец дня MSK)
       - ISO8601 datetime: `2026-03-20T10:00:00Z`
-      - unix timestamp: `@1700000000` or `1700000000` (seconds/ms)
-      - digits only: treated as days
-    Returns unix epoch seconds (UTC) or None.
+      - digits only: дни от сейчас (не больше 100000)
+    Returns unix epoch seconds or None.
     """
     raw = (text or "").strip()
     if not raw:
@@ -348,19 +351,19 @@ def _parse_expiry_input(text: str) -> Optional[int]:
     if t in ("none", "∞", "never", "/none", "бессрочно", "без срока"):
         return None
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(MSK_TZ)
 
-    # Unix timestamp (seconds or ms)
-    if re.fullmatch(r"@?\d{10,13}", raw):
-        n = int(raw.lstrip("@"))
-        if len(str(n)) == 13:
-            n //= 1000
-        return n
+    # ДД.ММ.ГГГГ (конец календарного дня MSK)
+    if re.fullmatch(r"\d{2}\.\d{2}\.\d{4}", raw):
+        dt = datetime.strptime(raw, "%d.%m.%Y").replace(
+            tzinfo=MSK_TZ, hour=23, minute=59, second=59
+        )
+        return int(dt.timestamp())
 
-    # Date only
+    # YYYY-MM-DD (совместимость, конец дня MSK)
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
         dt = datetime.strptime(raw, "%Y-%m-%d").replace(
-            tzinfo=timezone.utc, hour=23, minute=59, second=59
+            tzinfo=MSK_TZ, hour=23, minute=59, second=59
         )
         return int(dt.timestamp())
 
@@ -397,9 +400,11 @@ def _parse_expiry_input(text: str) -> Optional[int]:
             raise ValueError("Неизвестный unit")
         return int(dt.timestamp())
 
-    # Digits only => days
+    # Digits only => days (большие числа не считаем unix timestamp)
     if re.fullmatch(r"\d+", raw):
         days = int(raw)
+        if days > 100000:
+            raise ValueError("Слишком большое число дней; укажите длительность как 30d или дату 20.03.2026")
         dt = now + timedelta(days=days)
         return int(dt.timestamp())
 
@@ -463,7 +468,7 @@ async def _do_add_client(update: Update, context: ContextTypes.DEFAULT_TYPE, dis
 
     await update.message.reply_text(
         "🗓 Введите срок действия клиента.\n"
-        "Примеры: <code>30d</code>, <code>12h</code>, <code>2026-03-20</code> (UTC), <code>@1700000000</code>, или <code>none</code>.\n"
+        "Примеры: <code>30d</code>, <code>12h</code>, <code>20.03.2026</code> (MSK) или <code>бессрочно</code>.\n"
         "Если срок уже истёк — бот попросит ввести новый.",
         parse_mode=ParseMode.HTML,
     )
@@ -491,7 +496,7 @@ async def _do_finalize_add_client(
         expires_at = _parse_expiry_input(expiry_text)
     except ValueError as e:
         await update.message.reply_text(
-            f"❌ {e}\nФорматы: <code>30d</code>, <code>12h</code>, <code>2026-03-20</code>, <code>@1700000000</code>, или <code>none</code>.",
+            f"❌ {e}\nФорматы: <code>30d</code>, <code>12h</code>, <code>20.03.2026</code> или <code>бессрочно</code>.",
             parse_mode=ParseMode.HTML,
         )
         return
@@ -499,7 +504,7 @@ async def _do_finalize_add_client(
     now_ts = int(time.time())
     if expires_at is not None and expires_at <= now_ts:
         await update.message.reply_text(
-            "❌ Срок уже истёк. Введите дату/длительность в будущем или <code>none</code>.",
+            "❌ Срок уже истёк. Введите дату/длительность в будущем или <code>бессрочно</code>.",
             parse_mode=ParseMode.HTML,
         )
         return
@@ -714,7 +719,7 @@ async def _do_get_config(update: Update, context: ContextTypes.DEFAULT_TYPE, arg
             except Exception:
                 logger.exception("Auto-disable for expired client failed: %s", client_id)
             await update.message.reply_text(
-                f"❌ Клиент заблокирован: срок истёк \\({escape_markdown_v2(_format_expires_at(expires_at))} UTC\\)",
+                f"❌ Клиент заблокирован: срок истёк \\({escape_markdown_v2(_format_expires_at(expires_at))} MSK\\)",
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
             return
@@ -990,7 +995,7 @@ async def _do_set_expiry_client(update: Update, context: ContextTypes.DEFAULT_TY
     display = _display_name(name)
     await update.message.reply_text(
         f"🗓 Новый срок для <b>{_escape_html(display)}</b> (ID: <code>{_escape_html(client_id)}</code>):\n"
-        "Примеры: <code>30d</code>, <code>12h</code>, <code>2026-03-20</code> (UTC), <code>@1700000000</code>, или <code>none</code>.",
+        "Примеры: <code>30d</code>, <code>12h</code>, <code>20.03.2026</code> (MSK) или <code>бессрочно</code>.",
         parse_mode=ParseMode.HTML,
     )
 
@@ -1010,7 +1015,7 @@ async def _do_set_expiry_value(update: Update, context: ContextTypes.DEFAULT_TYP
         expires_at = _parse_expiry_input(expiry_text)
     except ValueError as e:
         await update.message.reply_text(
-            f"❌ {e}\nФорматы: <code>30d</code>, <code>12h</code>, <code>2026-03-20</code>, <code>@1700000000</code>, или <code>none</code>.",
+            f"❌ {e}\nФорматы: <code>30d</code>, <code>12h</code>, <code>20.03.2026</code> или <code>бессрочно</code>.",
             parse_mode=ParseMode.HTML,
         )
         return
@@ -1054,7 +1059,7 @@ async def _do_set_expiry_value(update: Update, context: ContextTypes.DEFAULT_TYP
             except Exception:
                 logger.exception("enable_client_everywhere failed for %s", client_id)
             await update.message.reply_text(
-                f"✅ Срок обновлён для *{escape_markdown_v2(display)}*: до \\({escape_markdown_v2(_format_expires_at(expires_at))} UTC\\)",
+                f"✅ Срок обновлён для *{escape_markdown_v2(display)}*: до \\({escape_markdown_v2(_format_expires_at(expires_at))} MSK\\)",
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
 
@@ -1135,7 +1140,7 @@ async def _do_enable_client_target(
     now_ts = int(time.time())
     if expires_at is not None and expires_at <= now_ts:
         await update.message.reply_text(
-            f"❌ Нельзя включить: срок истёк ({_format_expires_at(expires_at)} UTC). "
+            f"❌ Нельзя включить: срок истёк ({_format_expires_at(expires_at)} MSK). "
             "Сначала продлите срок командой <code>/set_expiry</code>.",
             parse_mode=ParseMode.HTML,
         )
