@@ -296,7 +296,7 @@ def _client_list_build_page(
     result = f"👥 *Список клиентов* \\(всего: {escaped_total}\\)\n"
     if sq:
         result += f"🔎 *Фильтр:* `{escape_markdown_v2(sq)}`\n"
-    result += f"📄 Стр\\. *{ep}* из *{etp}*\n"
+    result += f"📄 Стр\\. *{ep}* из *{etp}*\n\n"
     result += "ℹ️ *✅* активен · *⏸* отключён · *⌛* истёк срок\n\n"
 
     now_ts = int(time.time())
