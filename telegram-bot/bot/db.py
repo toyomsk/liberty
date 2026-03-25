@@ -242,6 +242,33 @@ def get_expired_clients(now_ts: int, db_path: str) -> List[Tuple[str, str]]:
         conn.close()
 
 
+def get_expired_clients_unsent_notice(
+    now_ts: int,
+    db_path: str,
+) -> List[Tuple[str, str, int]]:
+    """
+    Return clients that already expired (expires_at <= now_ts),
+    are candidates for disabling (disabled_at may be NULL/NOT NULL),
+    and haven't received an expiry notice yet.
+    """
+    conn = sqlite3.connect(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT id, name, expires_at
+            FROM clients
+            WHERE expires_at IS NOT NULL
+              AND expires_at <= ?
+              AND expiry_notice_sent_at IS NULL
+            ORDER BY expires_at
+            """,
+            (now_ts,),
+        ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+    finally:
+        conn.close()
+
+
 def set_expires_at(
     client_id: str,
     expires_at: Optional[int],
@@ -316,7 +343,7 @@ def get_clients_expiring_within_window(
               AND expires_at > ?
               AND expires_at <= ?
               AND disabled_at IS NULL
-              AND (expiry_notice_sent_at IS NULL OR expiry_notice_sent_at < expires_at)
+              AND expiry_notice_sent_at IS NULL
             ORDER BY expires_at
             """,
             (now_ts, until_ts),

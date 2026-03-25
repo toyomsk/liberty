@@ -19,6 +19,7 @@ from bot import hysteria_manager, mtproxy_manager, xray_manager
 from bot.awg_manager import delete_client as awg_delete_client, enable_client_peer as awg_enable_client_peer
 from bot.db import (
     get_expired_clients,
+    get_expired_clients_unsent_notice,
     get_clients_expiring_within_window,
     get_client_details_by_id,
     set_expiry_notice_sent_at,
@@ -254,13 +255,54 @@ def expire_clients_now(now_ts: Optional[int] = None) -> int:
     return len(expired)
 
 
-async def expiry_job(_context) -> None:
+async def expiry_job(context) -> None:
     """Periodic job for PTB JobQueue."""
     try:
-        expire_clients_now()
-        await notify_expiring_clients(_context)
+        now_ts = int(time.time())
+
+        # "Железобетонно": если клиент уже истёк и был заблокирован,
+        # но уведомление по 24ч окну не ушло — отправим сейчас.
+        expired_unsent = get_expired_clients_unsent_notice(now_ts, DB_PATH)
+        if expired_unsent:
+            await notify_expired_clients_now(context, expired_unsent, now_ts)
+
+        expire_clients_now(now_ts)
+        await notify_expiring_clients(context)
     except Exception as e:
         logger.exception("expiry_job failed: %s", e)
+
+
+async def notify_expired_clients_now(
+    context,
+    rows: List[Tuple[str, str, int]],
+    now_ts: int,
+) -> None:
+    """
+    Notify admins for clients that are already expired and still have
+    expiry_notice_sent_at == NULL.
+    """
+    for client_id, client_name, expires_at in rows:
+        text = (
+            "⏰ Клиент истёк и был заблокирован\\n"
+            f"ID: <code>{client_id}</code>\\n"
+            f"Имя: <code>{client_name}</code>\\n"
+            f"Истекает (MSK): <code>{datetime.fromtimestamp(expires_at, tz=MSK_TZ).strftime('%d.%m.%Y %H:%M:%S')}</code>"
+        )
+
+        sent_ok = False
+        for admin_id in ADMIN_IDS:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=text,
+                    parse_mode="HTML",
+                )
+                sent_ok = True
+            except Exception as e:
+                logger.warning("Failed sending expired notice to admin %s: %s", admin_id, e)
+
+        if sent_ok:
+            set_expiry_notice_sent_at(client_id, now_ts, DB_PATH)
 
 
 async def notify_expiring_clients(context) -> None:
